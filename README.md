@@ -1,8 +1,8 @@
 # Daedalus
 
-Daedalus is a secure application development platform designed to help protect software from reverse engineering and intellectual property theft. It does this by transforming protected code into a generated secret schema that cannot be easily deconstructed, while still allowing it to execute on a regular computer system.
+Daedalus is a secure application development platform designed to help protect software from reverse engineering and intellectual property theft. It does this by transforming protected code into a generated secret schema that cannot be easily deconstructed, while still allowing it to execute on a regular computer system. This process is generally known as code virtualization based obfuscation.
 
-The core idea behind Daedalus is simple: software distributed to users normally conforms to open and well-understood execution standards, which means it can often be analyzed, instrumented, and reverse engineered. Daedalus attempts to improve this security barrier by allowing software to be compiled into a unique execution model that only a synthesized runtime can understand.
+The core idea behind Daedalus is to extrapolate the idea of code obfuscation by virtualization beyond a software interpreter and as close to a hardware interpreter core as possible while being constrainted in a software system. Daedalus achieves this by leveraging the Verilator hardware description language simulation tool. 
 
 ---
 
@@ -15,7 +15,7 @@ Daedalus synthesizes a **security toolchain** for each project. This toolchain c
 - A secure enclave platform realized through simulated RTL hardware using Verilator
 - A message passing layer allowing protected and unprotected code to communicate
 
-The result is that no two protected projects need to be alike. Different synthesis seeds and feature selections can produce unique execution platforms, opcode layouts, encryption keys, and behavioral variations.
+The result is that no two protected projects are alike. Different synthesis seeds and feature selections can produce unique execution platforms, opcode layouts, encryption keys, and behavioral variations.
 
 ---
 
@@ -310,12 +310,6 @@ See project documentation for full setup steps.
 ## Repository
 
 https://github.com/JeremyWildsmith/daedalus-virtualizer
-
----
-
-## Disclaimer
-
-Daedalus is a research and educational project exploring software protection techniques. It is not marketed as a guaranteed defense against determined adversaries. Security should always be approached in layers.
 
 ---
 
