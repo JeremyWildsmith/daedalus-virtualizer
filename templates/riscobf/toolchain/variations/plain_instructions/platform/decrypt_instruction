@@ -1,0 +1,3 @@
+
+  wire [31:0] instr_dec;
+  assign instr_dec = mem_rdata;

@@ -1,0 +1,4 @@
+// decrypt ram
+    mem_rdata = ram[idx] ^ (
+        ((32'd[[[ core_ram_seed ]]] + logical_idx) * 32'd1732714) + 32'd1182730741
+    );

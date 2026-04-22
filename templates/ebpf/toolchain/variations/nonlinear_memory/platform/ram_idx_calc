@@ -1,0 +1,5 @@
+
+  wire [IDXBITS-1:0] seed_idx    = 32'd[[[ core_memory_nonlinear_seed ]]] | 1'b1;
+  
+  wire [IDXBITS-1:0] idx         = logical_idx * seed_idx;
+  wire [IDXBITS-1:0] load_idx    = logical_load_idx * seed_idx;

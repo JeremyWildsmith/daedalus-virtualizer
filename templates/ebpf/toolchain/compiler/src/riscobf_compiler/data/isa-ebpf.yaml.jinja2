@@ -1,0 +1,179 @@
+crypt_seed: [[[ ebpf_crypt_seed ]]]
+encoding:
+- name: "alu64_add_k"
+  native: 7
+  target: [[[ alu64_add_k ]]]
+- name: "alu64_add_x"
+  native: 15
+  target: [[[ alu64_add_x ]]]
+- name: "alu64_sub_k"
+  native: 23
+  target: [[[ alu64_sub_k ]]]
+- name: "alu64_sub_x"
+  native: 31
+  target: [[[ alu64_sub_x ]]]
+- name: "alu64_mul_k"
+  native: 39
+  target: [[[ alu64_mul_k ]]]
+- name: "alu64_mul_x"
+  native: 47
+  target: [[[ alu64_mul_x ]]]
+- name: "alu64_div_k"
+  native: 55
+  target: [[[ alu64_div_k ]]]
+- name: "alu64_div_x"
+  native: 63
+  target: [[[ alu64_div_x ]]]
+- name: "alu64_mod_k"
+  native: 151
+  target: [[[ alu64_mod_k ]]]
+- name: "alu64_mod_x"
+  native: 159
+  target: [[[ alu64_mod_x ]]]
+- name: "alu64_and_k"
+  native: 87
+  target: [[[ alu64_and_k ]]]
+- name: "alu64_and_x"
+  native: 95
+  target: [[[ alu64_and_x ]]]
+- name: "alu64_or_k"
+  native: 71
+  target: [[[ alu64_or_k ]]]
+- name: "alu64_or_x"
+  native: 79
+  target: [[[ alu64_or_x ]]]
+- name: "alu64_xor_k"
+  native: 167
+  target: [[[ alu64_xor_k ]]]
+- name: "alu64_xor_x"
+  native: 175
+  target: [[[ alu64_xor_x ]]]
+- name: "alu64_mov_k"
+  native: 183
+  target: [[[ alu64_mov_k ]]]
+- name: "alu64_mov_x"
+  native: 191
+  target: [[[ alu64_mov_x ]]]
+- name: "alu64_neg"
+  native: 135
+  target: [[[ alu64_neg ]]]
+- name: "alu64_lsh_k"
+  native: 103
+  target: [[[ alu64_lsh_k ]]]
+- name: "alu64_lsh_x"
+  native: 111
+  target: [[[ alu64_lsh_x ]]]
+- name: "alu64_rsh_k"
+  native: 119
+  target: [[[ alu64_rsh_k ]]]
+- name: "alu64_rsh_x"
+  native: 127
+  target: [[[ alu64_rsh_x ]]]
+- name: "alu64_arsh_k"
+  native: 199
+  target: [[[ alu64_arsh_k ]]]
+- name: "alu64_arsh_x"
+  native: 207
+  target: [[[ alu64_arsh_x ]]]
+- name: "ldx_mem_b"
+  native: 113
+  target: [[[ ldx_mem_b ]]]
+- name: "ldx_mem_h"
+  native: 105
+  target: [[[ ldx_mem_h ]]]
+- name: "ldx_mem_w"
+  native: 97
+  target: [[[ ldx_mem_w ]]]
+- name: "ldx_mem_dw"
+  native: 121
+  target: [[[ ldx_mem_dw ]]]
+- name: "stx_mem_b"
+  native: 115
+  target: [[[ stx_mem_b ]]]
+- name: "stx_mem_h"
+  native: 107
+  target: [[[ stx_mem_h ]]]
+- name: "stx_mem_w"
+  native: 99
+  target: [[[ stx_mem_w ]]]
+- name: "stx_mem_dw"
+  native: 123
+  target: [[[ stx_mem_dw ]]]
+- name: "st_mem_b"
+  native: 114
+  target: [[[ st_mem_b ]]]
+- name: "st_mem_h"
+  native: 106
+  target: [[[ st_mem_h ]]]
+- name: "st_mem_w"
+  native: 98
+  target: [[[ st_mem_w ]]]
+- name: "st_mem_dw"
+  native: 122
+  target: [[[ st_mem_dw ]]]
+- name: "jmp_ja"
+  native: 5
+  target: [[[ jmp_ja ]]]
+- name: "jmp_jeq_k"
+  native: 21
+  target: [[[ jmp_jeq_k ]]]
+- name: "jmp_jeq_x"
+  native: 29
+  target: [[[ jmp_jeq_x ]]]
+- name: "jmp_jne_k"
+  native: 85
+  target: [[[ jmp_jne_k ]]]
+- name: "jmp_jne_x"
+  native: 93
+  target: [[[ jmp_jne_x ]]]
+- name: "jmp_jgt_k"
+  native: 37
+  target: [[[ jmp_jgt_k ]]]
+- name: "jmp_jgt_x"
+  native: 45
+  target: [[[ jmp_jgt_x ]]]
+- name: "jmp_jge_k"
+  native: 53
+  target: [[[ jmp_jge_k ]]]
+- name: "jmp_jge_x"
+  native: 61
+  target: [[[ jmp_jge_x ]]]
+- name: "jmp_jset_k"
+  native: 69
+  target: [[[ jmp_jset_k ]]]
+- name: "jmp_jset_x"
+  native: 77
+  target: [[[ jmp_jset_x ]]]
+- name: "jmp_jsgt_k"
+  native: 101
+  target: [[[ jmp_jsgt_k ]]]
+- name: "jmp_jsgt_x"
+  native: 109
+  target: [[[ jmp_jsgt_x ]]]
+- name: "jmp_jsge_k"
+  native: 117
+  target: [[[ jmp_jsge_k ]]]
+- name: "jmp_jsge_x"
+  native: 125
+  target: [[[ jmp_jsge_x ]]]
+- name: "jmp_jslt_k"
+  native: 197
+  target: [[[ jmp_jslt_k ]]]
+- name: "jmp_jslt_x"
+  native: 205
+  target: [[[ jmp_jslt_x ]]]
+- name: "jmp_jsle_k"
+  native: 213
+  target: [[[ jmp_jsle_k ]]]
+- name: "jmp_jsle_x"
+  native: 221
+  target: [[[ jmp_jsle_x ]]]
+- name: "jmp_call"
+  native: 133
+  target: [[[ jmp_call ]]]
+- name: "jmp_exit"
+  native: 149
+  target: [[[ jmp_exit ]]]
+- name: "ldimm64"
+  native: 24
+  target: [[[ ldimm64 ]]]

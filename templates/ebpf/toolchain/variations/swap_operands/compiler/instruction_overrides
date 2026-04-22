@@ -1,0 +1,38 @@
+def make_alu_r_swapped(spec, mnemonic):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    rn = Operand("rn", RiscObfRegister, read=True)
+    rm = Operand("rm", RiscObfRegister, read=True)
+    syntax = Syntax([mnemonic, " ", rd, ",", " ", rn, ",", " ", rm])
+
+    patterns = {
+        "rs1": rm,
+        "rs2": rn,
+        "rd": rd
+    }
+    
+    members = {
+        "syntax": syntax,
+        "rd": rd,
+        "rn": rn,
+        "rm": rm,
+        "operand_patterns": patterns,
+        "spec_key": spec
+    }
+
+    name = mnemonic.title() + "RegRegReg"
+    return type(name, (RiscObfInstructionNew,), members)
+
+Slt = make_alu_r_swapped("slt", "slt")
+Subr = make_alu_r_swapped("subr", "sub")
+Sltu = make_alu_r_swapped("sltu", "sltu")
+
+Blt = make_branch("blt", "blt", True)
+Bge = make_branch("bge", "bge", True)
+Bltu = make_branch("bltu", "bltu", True)
+Bgeu = make_branch("bgeu", "bgeu", True)
+
+# These are effectively pseudo instructions created by inverting the operands
+Bgt = make_branch("blt", "bgt", False)
+Ble = make_branch("bge", "ble", False)
+Bgtu = make_branch("bltu", "bgtu", False)
+Bleu = make_branch("bgeu", "bleu", False)

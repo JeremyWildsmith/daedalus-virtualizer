@@ -1,0 +1,1 @@
+instruction_encrypt_link_result(linked, isa.get("core_crypt_seed"))

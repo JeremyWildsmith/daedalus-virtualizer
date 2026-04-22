@@ -1,0 +1,22 @@
+[project]
+name = "riscobf-compiler"
+version = "0.1.0"
+description = "riscobf platform compiler"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ppci @ git+https://github.com/windelbouwman/ppci.git@f0e9aa0bd83dd96aae876e73051f2263dea390bc",
+    "pyyaml",
+    "capstone"
+]
+
+[project.scripts]
+riscobf-compile = "riscobf_compiler.cli:main"
+
+
+[tool.setuptools]
+include-package-data = true
+
+
+[tool.setuptools.package-data]
+riscobf_compiler = ["data/*"]

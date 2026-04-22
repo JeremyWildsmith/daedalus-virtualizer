@@ -1,0 +1,263 @@
+architecture:
+  name: "Foundry"
+  description: "This uses RTL Virutalization over a RISCV variant core."
+  cost: 5
+
+variables:
+  int:
+    declarations:
+    - name: sim_thread_count
+      min_val: 3
+      max_val: 4
+
+    - name: core_crypt_seed
+      min_val: 1
+      max_val: 4294967295
+
+    - name: core_ram_seed
+      min_val: 1
+      max_val: 4294967295
+
+    - name: core_memory_nonlinear_seed
+      min_val: 1
+      max_val: 4294967295
+
+  bitstrings:
+    declarations:
+    - name: opcode_alur
+      bits: 7
+    - name: opcode_opimm
+      bits: 7
+    - name: opcode_jal
+      bits: 7
+    - name: opcode_jalr
+      bits: 7
+    - name: opcode_lui
+      bits: 7
+    - name: opcode_auipc
+      bits: 7
+    - name: opcode_branch
+      bits: 7
+    - name: opcode_store
+      bits: 7
+    - name: opcode_load
+      bits: 7
+    - name: funct3_add_sub
+      bits: 3
+    - name: funct3_sll
+      bits: 3
+    - name: funct3_slt
+      bits: 3
+    - name: funct3_sltu
+      bits: 3
+    - name: funct3_xor
+      bits: 3
+    - name: funct3_srx
+      bits: 3
+    - name: funct3_or
+      bits: 3
+    - name: funct3_and
+      bits: 3
+    - name: funct3_addi
+      bits: 3
+    - name: funct3_beq
+      bits: 3
+    - name: funct3_bne
+      bits: 3
+    - name: funct3_blt
+      bits: 3
+    - name: funct3_bge
+      bits: 3
+    - name: funct3_bltu
+      bits: 3
+    - name: funct3_bgeu
+      bits: 3
+    - name: funct3_sb
+      bits: 3
+    - name: funct3_sh
+      bits: 3
+    - name: funct3_sw
+      bits: 3
+    - name: funct3_lb
+      bits: 3
+    - name: funct3_lh
+      bits: 3
+    - name: funct3_lw
+      bits: 3
+    - name: funct3_lbu
+      bits: 3
+    - name: funct3_lhu
+      bits: 3
+    - name: funct3_jalr
+      bits: 3
+    - name: funct7_rtype_base
+      bits: 7
+    - name: funct7_add
+      bits: 7
+    - name: funct7_sub
+      bits: 7
+    - name: funct7_srl
+      bits: 7
+    - name: funct7_sra
+      bits: 7
+
+    constraints:
+      # IMPORTANT NOTE, YOU MUST PROPAGATE THE EQUALITY
+      # I.e the below states funct3_add_sub must be disjoint from funct3_sll
+      #   - But also that funct3_add_sub overlaps funct3_addi
+      #   - Therefore funct3_add_sub must also be disjoint from funct3_addi
+      disjoint:
+      - [ opcode_load, opcode_opimm, opcode_store, opcode_alur, opcode_jal, opcode_jalr, opcode_lui, opcode_auipc, opcode_branch ]
+      - [ funct3_add_sub, funct3_sll, funct3_slt, funct3_sltu, funct3_xor, funct3_srx, funct3_or, funct3_and ]
+      - [ funct3_beq, funct3_bne, funct3_blt, funct3_bge, funct3_bltu, funct3_bgeu ]
+      - [ funct3_lb, funct3_lh, funct3_lw ]
+      - [ funct3_lbu, funct3_lhu ]
+      - [ funct3_lbu, funct3_lhu, funct3_lb, funct3_lh, funct3_lw ]
+
+      overlaps:
+      - [ funct3_addi, funct3_add_sub ]
+      - [ funct3_lb, funct3_sb ]
+      - [ funct3_lh, funct3_sh ]
+      - [ funct3_lw, funct3_sw ]
+
+variations:
+  database: ./toolchain/variations
+  default: [ normal_operands ]
+  required_sections:
+  - alu_combinatorial
+  - ram_idx_calc
+  
+  index:
+  - name: "Linear Memory Map"
+    key: linear_memory
+    description: "Linear memory organization."
+    config_toggle:
+      key: "Memory Layout Scrambling"
+      state: false
+    hooks:
+      compiler:
+      platform:
+        ram_idx_calc:
+          exclusive: true
+
+  - name: "Nonlinear Memory Map"
+    description: "Nonlinear memory organization."
+    config_toggle:
+      key: "Memory Layout Scrambling"
+      state: true
+    key: nonlinear_memory
+    exclusive: false
+    hooks:
+      compiler:
+      platform:
+        ram_idx_calc:
+          exclusive: true
+
+
+  - name: "Encrypted Instructions"
+    description: "Instructions are encrypted, incorporating Program Counter into key."
+    config_toggle:
+      key: "Program Counter Instruction Encryption"
+      state: true
+    key: encrypted_instructions
+    exclusive: false
+    hooks:
+      compiler:
+        encrypt_instruction:
+          exclusive: true
+      platform:
+        decrypt_instruction:
+          exclusive: true
+
+  - name: "Plain Instructions"
+    description: "Instructions are stored in plaintext."
+    config_toggle:
+      key: "Program Counter Instruction Encryption"
+      state: false
+    key: plain_instructions
+    exclusive: false
+    hooks:
+      compiler:
+        encrypt_instruction:
+          exclusive: true
+      platform:
+        decrypt_instruction:
+          exclusive: true
+
+  - name: "Encrypted RAM"
+    description: "RAM is encrypted, incorporating Program Counter into key."
+    config_toggle:
+      key: "Memory Encryption"
+      state: true
+    key: encrypted_memory
+    exclusive: false
+    hooks:
+      platform:
+        decrypt_ram:
+          exclusive: true
+        encrypt_ram:
+          exclusive: true
+        encrypt_ram_load:
+          exclusive: true
+      compiler:
+        encrypt_image:
+          exclusive: true
+
+  - name: "Plain RAM"
+    description: "Ram is stored in plaintext."
+    config_toggle:
+      key: "Memory Encryption"
+      state: false
+    key: plain_memory
+    exclusive: false
+    hooks:
+      platform:
+        decrypt_ram:
+          exclusive: true
+        encrypt_ram:
+          exclusive: true
+        encrypt_ram_load:
+          exclusive: true
+
+  - name: "Normal Operands"
+    key: normal_operands
+    description: "The original base architecture with no variation."
+    hooks:
+      compiler:
+      platform:
+        alu_combinatorial:
+          exclusive: true
+
+  - name: "Swap Operands"
+    description: "Swap sub, slt, sltu operands. Swap and invert branches blt, bge, bltu, bgeu"
+    key: "swap_operands"
+    exclusive: false
+    hooks:
+      compiler:
+        instruction_overrides:
+          exclusive: false
+      platform:
+        alu_combinatorial:
+          exclusive: true
+
+components:
+- name: "Memory Encryption"
+  default: true
+
+- name: "Memory Layout Scrambling"
+  default: true
+
+- name: "Program Counter Instruction Encryption"
+  default: true
+
+toolchain:
+  isa: ./toolchain/isa.yaml
+  compiler:
+    build: ./toolchain/compiler
+    invoke: ./toolchain/compiler/dist/compile.pyz
+  platform:
+    build: ./toolchain/platform
+    lib:
+    - ./toolchain/platform/bin/platform.a
+    - ./toolchain/platform/bin/server.a
+    - ./toolchain/platform/bin/verilated_runtime.a

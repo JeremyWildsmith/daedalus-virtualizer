@@ -1,0 +1,2 @@
+class ArchSpec:
+    pass

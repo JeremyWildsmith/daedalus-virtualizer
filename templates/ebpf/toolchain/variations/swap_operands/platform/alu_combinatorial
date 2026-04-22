@@ -1,0 +1,5 @@
+  wire [32:0] aluMinus = {1'b1, ~aluIn1} + {1'b0, aluIn2} + 33'b1;
+  
+  wire EQ  = (aluIn2 == aluIn1);
+  wire LT  = ($signed(aluIn2) < $signed(aluIn1));
+  wire LTU = (aluIn2 < aluIn1);

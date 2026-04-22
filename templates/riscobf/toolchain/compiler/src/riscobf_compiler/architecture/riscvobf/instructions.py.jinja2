@@ -1,0 +1,1299 @@
+"""Definitions of Riscv instructions."""
+
+# pylint: disable=no-member,invalid-name
+import struct
+
+from .spec import ArchSpec
+from ppci.utils.bitfun import inrange
+from ppci.arch.data_instructions import Dd
+from ppci.arch.encoding import Instruction, Operand, Syntax
+from ppci.arch.token import TokenSequence
+from ppci.arch.generic_instructions import (
+    Alignment,
+    ArtificialInstruction,
+    Global,
+    RegisterUseDef,
+    SectionInstruction,
+)
+from ppci.arch.isa import Isa
+from .registers import (
+    FP,
+    LR,
+    R0,
+    R10,
+    R12,
+    R13,
+    RiscObfRegister,
+)
+from .relocations import (
+    Abs32Imm12Relocation,
+    Abs32Imm20Relocation,
+    AbsAddr32Relocation,
+    BImm12Relocation,
+    BImm20Relocation,
+    RelImm12Relocation,
+    RelImm20Relocation,
+)
+from .tokens import RiscObfIToken, RiscObfToken, RiscObfJToken, RiscObfUToken, RiscObfSBToken, RiscObfSToken
+
+import yaml
+
+architecture_config_spec = None
+
+def configure_isa_spec(config):
+    global architecture_config_spec
+    architecture_config_spec = dict(config)
+
+def _create_spec_result(source, parent=None):
+    token_map = {
+        "RiscObfToken": RiscObfToken,
+        "RiscObfIToken": RiscObfIToken,
+        "RiscObfSToken": RiscObfSToken,
+        "RiscObfSBToken": RiscObfSBToken,
+        "RiscObfJToken": RiscObfJToken,
+        "RiscObfUToken": RiscObfUToken
+    }
+    
+    token = token_map.get(source.get("token"))
+    
+    if not token and parent:
+        token = token_map.get(parent.get("token"))
+    
+    if not token:
+        raise Exception("Could not find token for instruction spec.")
+    
+    r = {}
+    for origin in [parent, source]:
+        if not origin:
+            continue
+
+        for k, v in origin.items():
+            if k in ("name", "token", "group", "derived"):
+                continue
+                
+            r[k] = int(v, 2)
+        
+    return (token, r)    
+
+def _load_spec(name: str) -> dict:
+    if not architecture_config_spec:
+        raise Exception("No specification loaded. Call configure_isa_spec before using ISA.")
+    
+    encoding = architecture_config_spec["encoding"]
+
+    for i in encoding:
+        if i.get("name") == name:
+            return _create_spec_result(i)
+            
+    for i in encoding:
+        derived = i.get("derived", [])
+        
+        for d in derived:
+            if d.get("name") == name:
+                return _create_spec_result(d, i)
+
+    raise Exception(f"Instruction '{name}' has no configured encoding.")
+
+
+isa = Isa()
+
+isa.register_relocation(BImm12Relocation)
+isa.register_relocation(BImm20Relocation)
+isa.register_relocation(AbsAddr32Relocation)
+isa.register_relocation(Abs32Imm20Relocation)
+isa.register_relocation(Abs32Imm12Relocation)
+isa.register_relocation(RelImm20Relocation)
+isa.register_relocation(RelImm12Relocation)
+
+
+class RiscObfInstruction(Instruction):
+    tokens = [RiscObfToken]
+    isa = isa
+ 
+
+class RiscObfInstructionNew(RiscObfInstruction):
+    spec_key: str = None
+    isa = isa
+        
+    @classmethod
+    def spec(cls):
+        return _load_spec(cls.spec_key)
+    
+    @classmethod
+    def spec_pattern(cls):
+        return cls.spec()[1]
+    
+    @classmethod
+    def spec_token(cls):
+        return cls.spec()[0];
+    
+    def get_tokens(self):
+        tok = self.spec_token()
+        return TokenSequence([tok()])
+    
+    @property
+    def patterns(self):
+        merged = dict(self.spec_pattern())
+
+        if "operand_patterns" in type(self).__dict__:
+            effective_operands = {
+                key: (value(self) if callable(value) else value)
+                for key, value in type(self).operand_patterns.items()
+            }
+            
+            merged.update(effective_operands)
+
+        return merged
+
+class PseudoRiscObfInstruction(ArtificialInstruction):
+    isa = isa
+    pass
+
+
+class Align(PseudoRiscObfInstruction):
+    imm = Operand("imm", int)
+    syntax = Syntax([".", "align", " ", imm])
+
+    def render(self):
+        self.rep = self.syntax.render(self)
+        yield Alignment(self.imm, self.rep)
+
+
+class Section(PseudoRiscObfInstruction):
+    sec = Operand("sec", str)
+    syntax = Syntax([".", "section", " ", sec])
+
+    def render(self):
+        self.rep = self.syntax.render(self)
+        yield SectionInstruction(self.sec, self.rep)
+
+
+def dcd(v):
+    if type(v) is int:
+        return Dd(v)
+    elif type(v) is str:
+        return Dcd2(v)
+    else:  # pragma: no cover
+        raise NotImplementedError()
+
+
+class Dcd2(RiscObfInstruction):
+    v = Operand("v", str)
+    syntax = Syntax(["dcd", "=", v])
+
+    def encode(self):
+        tokens = self.get_tokens()
+        tokens[0][0:32] = 0
+        return tokens[0].encode()
+
+    def relocations(self):
+        return [AbsAddr32Relocation(self.v)]
+
+
+def make_alu_r(spec, mnemonic):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    rn = Operand("rn", RiscObfRegister, read=True)
+    rm = Operand("rm", RiscObfRegister, read=True)
+    syntax = Syntax([mnemonic, " ", rd, ",", " ", rn, ",", " ", rm])
+
+    patterns = {
+        "rs1": rn,
+        "rs2": rm,
+        "rd": rd
+    }
+    
+    members = {
+        "syntax": syntax,
+        "rd": rd,
+        "rn": rn,
+        "rm": rm,
+        "operand_patterns": patterns,
+        "spec_key": spec
+    }
+
+    name = mnemonic.title() + "RegRegReg"
+    return type(name, (RiscObfInstructionNew,), members)
+
+Addr = make_alu_r("addr", "add")
+Subr = make_alu_r("subr", "sub")
+Sll = make_alu_r("sll", "sll")
+Slt = make_alu_r("slt", "slt")
+Sltu = make_alu_r("sltu", "sltu")
+Xorr = make_alu_r("xorr", "xor")
+Srl = make_alu_r("srl", "srl")
+Sra = make_alu_r("sra", "sra")
+Orr = make_alu_r("orr", "or")
+Andr = make_alu_r("andr", "and")
+
+
+def make_si(spec, mnemonic):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    rs1 = Operand("rs1", RiscObfRegister, read=True)
+    imm = Operand("imm", int)
+    syntax = Syntax([mnemonic, " ", rd, ",", " ", rs1, ",", " ", imm])
+
+    patterns = {
+        "rd": rd,
+        "rs1": rs1,
+        "rs2": imm
+    }
+    
+    members = {
+        "syntax": syntax,
+        "operand_patterns": patterns,
+        "rd": rd,
+        "rs1": rs1,
+        "imm": imm,
+        "spec_key": spec
+    }
+    name = mnemonic.title() + "ShiftImm"
+    return type(name, (RiscObfInstructionNew,), members)
+
+
+Slli = make_si("slli", "slli")
+Srli = make_si("srli", "srli")
+Srai = make_si("srai", "srai")
+
+
+def make_alu_i(spec, mnemonic: str):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    rs1 = Operand("rs1", RiscObfRegister, read=True)
+    offset = Operand("offset", int)
+
+    syntax = Syntax([mnemonic, " ", rd, ",", " ", rs1, ",", " ", offset])
+
+    patterns = {
+        "rd": rd,
+        "rs1": rs1,
+        "imm": offset
+    }
+
+    members = {
+        "syntax": syntax,
+        "operand_patterns": patterns,
+        "rd": rd,
+        "rs1": rs1,
+        "offset": offset,
+        "spec_key": spec
+    }
+
+    name = mnemonic.title() + "Imm"
+    return type(name, (RiscObfInstructionNew,), members)
+
+
+Addi = make_alu_i("addi", "addi")
+Slti = make_alu_i("slti", "slti")
+Sltiu = make_alu_i("sltiu", "sltiu")
+Xori = make_alu_i("xori", "xori")
+Ori = make_alu_i("ori", "ori")
+Andi = make_alu_i("andi", "andi")
+
+# Branches:
+
+
+class Nop(RiscObfInstructionNew):
+    syntax = Syntax(["nop"])
+    spec_key = "nop"
+
+
+class Bl(RiscObfInstructionNew):
+    spec_key = "bl"
+    target = Operand("target", str)
+    rd = Operand("rd", RiscObfRegister, write=True)
+    syntax = Syntax(["jal", " ", rd, ",", " ", target])
+
+    operand_patterns = {
+        "rd": rd
+    }
+
+    def relocations(self):
+        return [BImm20Relocation(self.target)]
+
+
+class B(RiscObfInstructionNew):
+    target = Operand("target", str)
+    syntax = Syntax(["j", " ", target])
+
+    spec_key = "b"
+
+    def relocations(self):
+        return [BImm20Relocation(self.target)]
+
+
+class Blr(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    rs1 = Operand("rs1", RiscObfRegister, read=True)
+    offset = Operand("offset", int)
+    syntax = Syntax(["jalr", " ", rd, ",", rs1, ",", " ", offset])
+
+    spec_key = "blr"
+
+    operand_patterns = {
+        "rd": rd,
+        "rs1": rs1,
+        "imm": offset
+    }
+
+
+class Lui(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    imm = Operand("imm", int)
+    syntax = Syntax(["lui", " ", rd, ",", " ", imm])
+
+    spec_key = "lui"
+
+    operand_patterns = {
+        "rd": rd,
+        "imm20": lambda self: self.imm & 0xFFFFF
+    }
+
+
+class Adru(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    label = Operand("label", str)
+    syntax = Syntax(["lui", " ", rd, ",", " ", label])
+
+    spec_key = "adru"
+
+    operand_patterns = {
+        "rd": rd
+    }
+
+    def relocations(self):
+        return [Abs32Imm20Relocation(self.label)]
+
+class Adrurel(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    label = Operand("label", str)
+    syntax = Syntax(["auipc", " ", rd, ",", " ", "%", "pcrel_hi", "(", label, ")"])
+
+    spec_key = "adrurel"
+    
+    operand_patterns = {
+        "rd": rd
+    }
+
+    def relocations(self):
+        return [RelImm20Relocation(self.label)]
+
+class Adrl(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    rs1 = Operand("rs1", RiscObfRegister, read=True)
+    label = Operand("label", str)
+    syntax = Syntax(["addi", " ", rd, ",", " ", rs1, ",", " ", label])
+
+    spec_key = "adrl"
+    
+    operand_patterns = {
+        "rd": rd,
+        "rs1": rs1
+    }
+    
+    def relocations(self):
+        return [Abs32Imm12Relocation(self.label)]
+
+
+class Loadlrel(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True, read=True)
+    label = Operand("label", str)
+    syntax = Syntax(["lw", " ", rd, "%", "pcrel_lo", "(", label, ")", "(", rd, ")"])
+
+    spec_key = "loadlrel"
+
+    operand_patterns = {
+        "rd": rd,
+        "rs1": rd
+    }
+
+    def relocations(self):
+        return [RelImm12Relocation(self.label)]
+
+class Adrlrel(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True, read=True)
+    label = Operand("label", str)
+    syntax = Syntax(["addi", " ", rd, ",", " ", label])
+
+    spec_key = "adrlrel"
+    
+    operand_patterns = {
+        "rd": rd,
+        "rs1": rd
+    }
+
+    def relocations(self):
+        return [RelImm12Relocation(self.label)]
+
+
+class Auipc(RiscObfInstructionNew):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    imm = Operand("imm", int)
+    syntax = Syntax(["auipc", " ", rd, ",", " ", imm])
+
+    operand_patterns = {
+        "rd": rd,
+        "imm20": lambda self: self.imm & 0xFFFFF
+    }
+
+
+class Labelrel(PseudoRiscObfInstruction):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    label = Operand("label", str)
+    syntax = Syntax(["lw", " ", rd, ",", " ", label])
+
+    def render(self):
+        yield Adrurel(self.rd, self.label)
+        yield Loadlrel(self.rd, self.label, self.rd)
+
+
+class La(PseudoRiscObfInstruction):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    label = Operand("label", str)
+    syntax = Syntax(["la", " ", rd, ",", " ", label])
+
+    def render(self):
+        yield Adrurel(self.rd, self.label)
+        yield Adrlrel(self.rd, self.label)
+
+
+class Li(PseudoRiscObfInstruction):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    imm = Operand("imm", int)
+    syntax = Syntax(["li", " ", rd, ",", " ", imm])
+
+    def render(self):
+        # If the immediate value fits into 12 bits, do so!
+        if inrange(self.imm, 12):
+            yield Addi(self.rd, R0, self.imm)
+        else:
+            if (self.imm & 0x800) != 0:
+                self.imm += 0x1000
+            yield Lui(self.rd, self.imm >> 12)
+            lower_bits = self.imm & 0xFFF
+            yield Addi(self.rd, self.rd, lower_bits)
+
+class BranchBase(RiscObfInstructionNew):
+    def relocations(self):
+        return [BImm12Relocation(self.target)]
+
+
+def make_branch(spec_key, mnemonic, invert):
+    target = Operand("target", str)
+    rn = Operand("rn", RiscObfRegister, read=True)
+    rm = Operand("rm", RiscObfRegister, read=True)
+    syntax = Syntax([mnemonic, " ", rn, ",", " ", rm, ",", " ", target])
+    
+    operand_patterns = {
+        "rs1": (rm if invert else rn),
+        "rs2": (rn if invert else rm)
+    }
+    
+    members = {
+        "syntax": syntax,
+        "target": target,
+        "rn": rn,
+        "rm": rm,
+        "invert": invert,
+        "operand_patterns": operand_patterns,
+        "spec_key": spec_key
+    }
+
+    cls_name = f"{mnemonic}_{spec_key}_inv{int(invert)}"
+    return type(cls_name, (BranchBase,), members)
+
+
+Blt = make_branch("blt", "blt", False)
+Bge = make_branch("bge", "bge", False)
+Bltu = make_branch("bltu", "bltu", False)
+Bgeu = make_branch("bgeu", "bgeu", False)
+
+# These are effectively pseudo instructions created by inverting the operands
+Bgt = make_branch("blt", "bgt", True)
+Ble = make_branch("bge", "ble", True)
+Bgtu = make_branch("bltu", "bgtu", True)
+Bleu = make_branch("bgeu", "bleu", True)
+
+Beq = make_branch("beq", "beq", False)
+Bne = make_branch("bne", "bne", False)
+
+
+def reg_list_to_mask(reg_list):
+    mask = 0
+    for reg in reg_list:
+        mask |= 1 << reg.num
+    return mask
+
+
+def make_str(spec_key, mnemonic):
+    rs2 = Operand("rs2", RiscObfRegister, read=True)
+    offset = Operand("offset", int)
+    rs1 = Operand("rs1", RiscObfRegister, read=True)
+    syntax = Syntax([mnemonic, " ", rs2, ",", " ", offset, "(", rs1, ")"])
+    
+    operand_patterns = {
+        "imm": lambda self: self.offset & 0xFFF,
+        "rs1": rs1,
+        "rs2": rs2,
+    }
+    
+    members = {
+        "syntax": syntax,
+        "operand_patterns": operand_patterns,
+        "spec_key": spec_key,
+        "rs1": rs1,
+        "rs2": rs2,
+        "offset": offset
+    }
+    return type(mnemonic.title(), (RiscObfInstructionNew,), members)
+
+
+Sb = make_str("sb", "sb")
+Sh = make_str("sh", "sh")
+Sw = make_str("sw", "sw")
+
+
+def make_ldr(spec_key, mnemonic):
+    rd = Operand("rd", RiscObfRegister, write=True)
+    offset = Operand("offset", int)
+    rs1 = Operand("rs1", RiscObfRegister, read=True)
+    fprel = False
+    syntax = Syntax([mnemonic, " ", rd, ",", " ", offset, "(", rs1, ")"])
+
+    operand_patterns = {
+        "rd": rd,
+        "rs1": rs1,
+        "imm": offset
+    }
+
+    members = {
+        "syntax": syntax,
+        "operand_patterns": operand_patterns,
+        "fprel": fprel,
+        "offset": offset,
+        "rd": rd,
+        "rs1": rs1,
+        "spec_key": spec_key
+    }
+    
+    return type(mnemonic.title(), (RiscObfInstructionNew,), members)
+
+
+Lb = make_ldr("lb", "lb")
+Lh = make_ldr("lh", "lh")
+Lw = make_ldr("lw", "lw")
+Lbu = make_ldr("lbu", "lbu")
+Lhu = make_ldr("lhu", "lhu")
+
+
+[[[ render_section("instruction_overrides") ]]]
+
+
+@isa.pattern("stm", "MOVI16(reg)", size=2)
+@isa.pattern("stm", "MOVU16(reg)", size=2)
+@isa.pattern("stm", "MOVI32(reg)", size=2)
+@isa.pattern("stm", "MOVU32(reg)", size=2)
+def pattern_mov32(context, tree, c0):
+    context.move(tree.value, c0)
+    return tree.value
+
+
+@isa.pattern("stm", "MOVU8(reg)", size=2)
+@isa.pattern("stm", "MOVI8(reg)", size=2)
+def pattern_movi8(context, tree, c0):
+    context.move(tree.value, c0)
+    return tree.value
+
+
+@isa.pattern("stm", "JMP", size=4)
+def pattern_jmp(context, tree):
+    tgt = tree.value
+    context.emit(B(tgt.name, jumps=[tgt]))
+
+
+@isa.pattern("stm", "MOVB(reg, reg)", size=40)
+def pattern_movb(context, tree, c0, c1):
+    # Emit memcpy
+    dst = c0
+    src = c1
+    tmp = context.new_reg(RiscObfRegister)
+    size = tree.value
+    for instruction in context.arch.gen_riscobf_memcpy(dst, src, tmp, size):
+        context.emit(instruction)
+
+
+@isa.pattern("reg", "REGI32", size=0)
+@isa.pattern("reg", "REGI16", size=0)
+@isa.pattern("reg", "REGI8", size=0)
+@isa.pattern("reg", "REGU32", size=0)
+@isa.pattern("reg", "REGF64", size=10)
+@isa.pattern("reg", "REGU16", size=0)
+@isa.pattern("reg", "REGU8", size=0)
+def pattern_reg(context, tree):
+    return tree.value
+
+
+@isa.pattern("reg", "U32TOU16(reg)", size=0)
+@isa.pattern("reg", "U32TOI16(reg)", size=0)
+@isa.pattern("reg", "I32TOI16(reg)", size=0)
+@isa.pattern("reg", "I32TOU16(reg)", size=0)
+@isa.pattern("reg", "U16TOU8(reg)", size=0)
+@isa.pattern("reg", "U16TOI8(reg)", size=0)
+@isa.pattern("reg", "I16TOI8(reg)", size=0)
+@isa.pattern("reg", "I16TOU8(reg)", size=0)
+def pattern_i32_to_i32(context, tree, c0):
+    return c0
+
+
+@isa.pattern("reg", "I8TOI16(reg)", size=4)
+@isa.pattern("reg", "I8TOI32(reg)", size=4)
+def pattern_i8_to_i32(context, tree, c0):
+    context.emit(Slli(c0, c0, 24))
+    context.emit(Srai(c0, c0, 24))
+    return c0
+
+
+@isa.pattern("reg", "I16TOI32(reg)", size=4)
+def pattern_i16_to_i32(context, tree, c0):
+    context.emit(Slli(c0, c0, 16))
+    context.emit(Srai(c0, c0, 16))
+    return c0
+
+
+@isa.pattern("reg", "I8TOU16(reg)", size=4)
+@isa.pattern("reg", "U8TOU16(reg)", size=4)
+@isa.pattern("reg", "U8TOI16(reg)", size=4)
+def pattern_8_to_16(context, tree, c0):
+    context.emit(Slli(c0, c0, 24))
+    context.emit(Srli(c0, c0, 24))
+    return c0
+
+
+@isa.pattern("reg", "I8TOU32(reg)", size=4)
+@isa.pattern("reg", "U8TOU32(reg)", size=4)
+@isa.pattern("reg", "U8TOI32(reg)", size=4)
+def pattern_8_to_32(context, tree, c0):
+    context.emit(Slli(c0, c0, 24))
+    context.emit(Srli(c0, c0, 24))
+    return c0
+
+
+@isa.pattern("reg", "I16TOU32(reg)", size=4)
+@isa.pattern("reg", "U16TOU32(reg)", size=4)
+@isa.pattern("reg", "U16TOI32(reg)", size=4)
+def pattern_16_to_32(context, tree, c0):
+    context.emit(Slli(c0, c0, 16))
+    context.emit(Srli(c0, c0, 16))
+    return c0
+
+
+@isa.pattern("reg", "I32TOI8(reg)", size=0)
+@isa.pattern("reg", "I32TOU8(reg)", size=0)
+@isa.pattern("reg", "I32TOI16(reg)", size=0)
+@isa.pattern("reg", "I32TOU16(reg)", size=0)
+@isa.pattern("reg", "U32TOU8(reg)", size=0)
+@isa.pattern("reg", "U32TOI8(reg)", size=0)
+@isa.pattern("reg", "U32TOU16(reg)", size=0)
+@isa.pattern("reg", "U32TOI16(reg)", size=0)
+def pattern_32_to_8_16(context, tree, c0):
+    # TODO: do something like sign extend or something else?
+    return c0
+
+
+@isa.pattern("reg", "CONSTI32", size=4)
+@isa.pattern("reg", "CONSTU32", size=4)
+@isa.pattern("reg", "CONSTI16", size=4)
+@isa.pattern("reg", "CONSTU16", size=4)
+@isa.pattern(
+    "reg",
+    "CONSTI32",
+    size=2,
+    condition=lambda t: t.value in range(-2048, 2048),
+)
+@isa.pattern(
+    "reg",
+    "CONSTI16",
+    size=2,
+    condition=lambda t: t.value in range(-2048, 2048),
+)
+@isa.pattern(
+    "reg", "CONSTI8", size=2, condition=lambda t: t.value in range(-128, 128)
+)
+@isa.pattern("reg", "CONSTU8", size=2, condition=lambda t: t.value < 256)
+def pattern_const_i32(context, tree):
+    d = context.new_reg(RiscObfRegister)
+    c0 = tree.value
+    context.emit(Li(d, c0))
+    return d
+
+@isa.pattern("stm", "CJMPI32(reg, reg)", size=6)
+@isa.pattern("stm", "CJMPI16(reg, reg)", size=6)
+@isa.pattern("stm", "CJMPI8(reg, reg)", size=6)
+def pattern_cjmpi(context, tree, c0, c1):
+    op, yes_label, no_label = tree.value
+
+    # Inverted condition mapping (so we branch-to-skip when NOT cond)
+    inv = {"<": Bge,  ">": Ble,  "==": Bne, "!=": Beq, ">=": Blt, "<=": Bgt}
+    Bnot = inv[op]
+
+    skip = context.new_label()
+
+    # if NOT cond -> skip (skip is local and emitted immediately, so SB offset always fits)
+    context.emit(Bnot(c0, c1, skip.name, jumps=[skip]))
+
+    # cond true:
+    context.emit(B(yes_label.name, jumps=[yes_label]))
+
+    # skip:
+    context.emit(skip)
+
+    # cond false:
+    context.emit(B(no_label.name, jumps=[no_label]))
+
+
+@isa.pattern("stm", "CJMPU8(reg, reg)", size=6)
+@isa.pattern("stm", "CJMPU16(reg, reg)", size=6)
+@isa.pattern("stm", "CJMPU32(reg, reg)", size=6)
+def pattern_cjmpu(context, tree, c0, c1):
+    op, yes_label, no_label = tree.value
+
+    inv = {"<": Bgeu, ">": Bleu, "==": Bne, "!=": Beq, ">=": Bltu, "<=": Bgtu}
+    Bnot = inv[op]
+
+    skip = context.new_label()
+
+    context.emit(Bnot(c0, c1, skip.name, jumps=[skip]))
+    context.emit(B(yes_label.name, jumps=[yes_label]))
+    context.emit(skip)
+    context.emit(B(no_label.name, jumps=[no_label]))
+
+
+@isa.pattern("reg", "ADDU32(reg, reg)", size=2)
+@isa.pattern("reg", "ADDI32(reg, reg)", size=2)
+def pattern_add_i32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Addr(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "ADDU16(reg, reg)", size=2)
+@isa.pattern("reg", "ADDI16(reg, reg)", size=2)
+def pattern_add_i16(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Addr(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "ADDI8(reg, reg)", size=2)
+@isa.pattern("reg", "ADDU8(reg, reg)", size=2)
+def pattern_add8(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Addr(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "ADDI32(reg, CONSTI32)",
+    size=2,
+    condition=lambda t: t[1].value < 2048,
+)
+@isa.pattern(
+    "reg",
+    "ADDU32(reg, CONSTU32)",
+    size=2,
+    condition=lambda t: t[1].value < 2048,
+)
+def pattern_add_i32_reg_const(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Addi(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "ADDI32(CONSTI32, reg)",
+    size=2,
+    condition=lambda t: t.children[0].value < 2048,
+)
+@isa.pattern(
+    "reg",
+    "ADDU32(CONSTU32, reg)",
+    size=2,
+    condition=lambda t: t.children[0].value < 2048,
+)
+def pattern_add_i32_const_reg(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[0].value
+    context.emit(Addi(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "SUBI8(reg, reg)", size=2)
+@isa.pattern("reg", "SUBU8(reg, reg)", size=2)
+@isa.pattern("reg", "SUBI16(reg, reg)", size=2)
+@isa.pattern("reg", "SUBU16(reg, reg)", size=2)
+@isa.pattern("reg", "SUBI32(reg, reg)", size=2)
+@isa.pattern("reg", "SUBU32(reg, reg)", size=2)
+def pattern_sub_i32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Subr(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "LABEL", size=6)
+def pattern_label1(context, tree):
+    d = context.new_reg(RiscObfRegister)
+    ln = context.frame.add_constant(tree.value)
+    context.emit(Adru(d, ln))
+    context.emit(Adrl(d, d, ln))
+    context.emit(Lw(d, 0, d))
+    return d
+
+
+@isa.pattern("reg", "LABEL", size=4)
+def pattern_label2(context, tree):
+    d = context.new_reg(RiscObfRegister)
+    ln = context.frame.add_constant(tree.value)
+    context.emit(Labelrel(d, ln))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "FPRELU32",
+    size=4,
+    condition=lambda t: t.value.offset in range(-2048, 2048),
+)
+def pattern_fpreli32(context, tree):
+    d = context.new_reg(RiscObfRegister)
+    offset = tree.value.offset
+    Code = Addi(d, FP, offset)
+    Code.fprel = True
+    context.emit(Code)
+    return d
+
+
+# Memory patterns:
+@isa.pattern(
+    "mem",
+    "FPRELU32",
+    size=0,
+    condition=lambda t: t.value.offset in range(-2048, 2048),
+)
+def pattern_mem_fpreli32(context, tree):
+    offset = tree.value.offset
+    return FP, offset
+
+
+@isa.pattern("mem", "reg", size=10)
+def pattern_mem_reg(context, tree, c0):
+    return c0, 0
+
+
+@isa.pattern("stm", "STRU32(mem, reg)", size=2)
+@isa.pattern("stm", "STRI32(mem, reg)", size=2)
+def pattern_sw32(context, tree, c0, c1):
+    base_reg, offset = c0
+    Code = Sw(c1, offset, base_reg)
+    Code.fprel = True
+    context.emit(Code)
+
+
+@isa.pattern("stm", "STRU32(reg, reg)", size=2)
+@isa.pattern("stm", "STRI32(reg, reg)", size=2)
+def pattern_sw32_reg(context, tree, c0, c1):
+    base_reg = c0
+    Code = Sw(c1, 0, base_reg)
+    context.emit(Code)
+
+
+@isa.pattern("stm", "STRI16(mem, reg)", size=2)
+@isa.pattern("stm", "STRU16(mem, reg)", size=2)
+def pattern_str16_mem(context, tree, c0, c1):
+    base_reg, offset = c0
+    Code = Sh(c1, offset, base_reg)
+    Code.fprel = True
+    context.emit(Code)
+
+
+@isa.pattern("stm", "STRI16(reg, reg)", size=2)
+@isa.pattern("stm", "STRU16(reg, reg)", size=2)
+def pattern_str16_reg(context, tree, c0, c1):
+    base_reg = c0
+    Code = Sh(c1, 0, base_reg)
+    context.emit(Code)
+
+
+@isa.pattern("stm", "STRU8(mem, reg)", size=2)
+@isa.pattern("stm", "STRI8(mem, reg)", size=2)
+def pattern_sbi8_mem(context, tree, c0, c1):
+    base_reg, offset = c0
+    Code = Sb(c1, offset, base_reg)
+    Code.fprel = True
+    context.emit(Code)
+
+
+@isa.pattern("stm", "STRU8(reg, reg)", size=2)
+@isa.pattern("stm", "STRI8(reg, reg)", size=2)
+def pattern_sbi8_reg(context, tree, c0, c1):
+    base_reg = c0
+    Code = Sb(c1, 0, base_reg)
+    context.emit(Code)
+
+
+@isa.pattern("reg", "LDRI8(mem)", size=2)
+def pattern_ldri8(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    base_reg, offset = c0
+    Code = Lb(d, offset, base_reg)
+    Code.fprel = True
+    context.emit(Code)
+    return d
+
+
+@isa.pattern("reg", "LDRI8(reg)", size=2)
+def pattern_ldri8_reg(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    base_reg = c0
+    Code = Lb(d, 0, base_reg)
+    context.emit(Code)
+    return d
+
+
+@isa.pattern("reg", "LDRU8(mem)", size=2)
+def pattern_ldru8_fprel(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    base_reg, offset = c0
+    Code = Lbu(d, offset, base_reg)
+    Code.fprel = True
+    context.emit(Code)
+    return d
+
+
+@isa.pattern("reg", "LDRU8(reg)", size=2)
+def pattern_ldru8_reg(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    base_reg = c0
+    Code = Lbu(d, 0, base_reg)
+    context.emit(Code)
+    return d
+
+
+@isa.pattern("reg", "LDRU32(mem)", size=2)
+@isa.pattern("reg", "LDRI32(mem)", size=2)
+def pattern_ldr32_fprel(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    base_reg, offset = c0
+    Code = Lw(d, offset, base_reg)
+    Code.fprel = True
+    context.emit(Code)
+    return d
+
+
+@isa.pattern("reg", "LDRU32(reg)", size=2)
+@isa.pattern("reg", "LDRI32(reg)", size=2)
+@isa.pattern("reg", "LDRF32(reg)", size=10)
+@isa.pattern("reg", "LDRF64(reg)", size=10)
+def pattern_ldr32_reg(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    base_reg = c0
+    Code = Lw(d, 0, base_reg)
+    context.emit(Code)
+    return d
+
+
+@isa.pattern("reg", "NEGI8(reg)", size=2)
+@isa.pattern("reg", "NEGI16(reg)", size=2)
+@isa.pattern("reg", "NEGI32(reg)", size=2)
+@isa.pattern("reg", "NEGU32(reg)", size=2)
+def pattern_negi32(context, tree, c0):
+    context.emit(Subr(c0, R0, c0))
+    return c0
+
+
+@isa.pattern("reg", "INVI8(reg)", size=2)
+@isa.pattern("reg", "INVU8(reg)", size=2)
+@isa.pattern("reg", "INVU32(reg)", size=2)
+@isa.pattern("reg", "INVI32(reg)", size=2)
+def pattern_inv(context, tree, c0):
+    context.emit(Xori(c0, c0, -1))
+    return c0
+
+
+@isa.pattern("reg", "LDRU16(reg)", size=2)
+def pattern_ldru16(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Lhu(d, 0, c0))
+    return d
+
+
+@isa.pattern("reg", "LDRI16(reg)", size=2)
+def pattern_ldri16(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Lh(d, 0, c0))
+    return d
+
+
+@isa.pattern("reg", "LDRU32(reg)", size=2)
+@isa.pattern("reg", "LDRI32(reg)", size=2)
+def pattern_ldr_i32(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Lw(d, 0, c0))
+    return d
+
+
+@isa.pattern("reg", "ANDI8(reg, reg)", size=2)
+@isa.pattern("reg", "ANDU8(reg, reg)", size=2)
+@isa.pattern("reg", "ANDI16(reg, reg)", size=2)
+@isa.pattern("reg", "ANDU16(reg, reg)", size=2)
+@isa.pattern("reg", "ANDI32(reg, reg)", size=2)
+@isa.pattern("reg", "ANDU32(reg, reg)", size=2)
+def pattern_and_i(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Andr(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "ANDI32(reg, CONSTI32)",
+    size=2,
+    condition=lambda t: t.children[1].value < 2048,
+)
+def pattern_and_i32(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Andi(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "ANDI8(reg, CONSTI8)",
+    size=2,
+    condition=lambda t: t.children[1].value < 256,
+)
+@isa.pattern(
+    "reg",
+    "ANDU8(reg, CONSTU8)",
+    size=2,
+    condition=lambda t: t.children[1].value < 256,
+)
+def pattern_and8_reg_const(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Andi(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "ORU32(reg, reg)", size=2)
+@isa.pattern("reg", "ORI32(reg, reg)", size=2)
+@isa.pattern("reg", "ORU16(reg, reg)", size=2)
+@isa.pattern("reg", "ORI16(reg, reg)", size=2)
+@isa.pattern("reg", "ORU8(reg, reg)", size=2)
+@isa.pattern("reg", "ORI8(reg, reg)", size=2)
+def pattern_or_i32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Orr(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "ORI32(reg, CONSTI32)",
+    size=2,
+    condition=lambda t: t.children[1].value < 2048,
+)
+def pattern_or_i32_reg_const(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Ori(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "ORI32(CONSTI32, reg)",
+    size=2,
+    condition=lambda t: t.children[0].value < 2048,
+)
+def pattern_or_i32_const_reg(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[0].value
+    context.emit(Ori(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "SHRU8(reg, reg)", size=2)
+@isa.pattern("reg", "SHRU16(reg, reg)", size=2)
+@isa.pattern("reg", "SHRU32(reg, reg)", size=2)
+def pattern_shr_u32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Srl(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "SHRI8(reg, reg)", size=2)
+def pattern_shr_i8(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Slli(c0, c0, 24))
+    context.emit(Srai(c0, c0, 24))
+    context.emit(Sra(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "SHRI16(reg, reg)", size=2)
+def pattern_shr_i16(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Slli(c0, c0, 16))
+    context.emit(Srai(c0, c0, 16))
+    context.emit(Sra(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "SHRI32(reg, reg)", size=2)
+def pattern_shr_i32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Sra(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "SHRI32(reg, CONSTI32)",
+    size=2,
+    condition=lambda t: t.children[1].value < 32,
+)
+def pattern_shr_i32_reg_const(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Srai(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "SHLU8(reg, reg)", size=2)
+@isa.pattern("reg", "SHLI8(reg, reg)", size=2)
+@isa.pattern("reg", "SHLU16(reg, reg)", size=2)
+@isa.pattern("reg", "SHLI16(reg, reg)", size=2)
+@isa.pattern("reg", "SHLU32(reg, reg)", size=2)
+@isa.pattern("reg", "SHLI32(reg, reg)", size=2)
+def pattern_shl_i32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Sll(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "SHLI32(reg, CONSTI32)",
+    size=2,
+    condition=lambda t: t.children[1].value < 32,
+)
+def pattern_shl_i32_reg_const(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Slli(d, c0, c1))
+    return d
+
+
+@isa.pattern("reg", "LDRI32(ADDI32(reg, CONSTI32))", size=2)
+def pattern_ldr_i32_add(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[0].children[1].value
+    assert isinstance(c1, int)
+    context.emit(Lw(d, c1, c0))
+    return d
+
+
+@isa.pattern("reg", "XORU8(reg, reg)", size=2)
+@isa.pattern("reg", "XORI8(reg, reg)", size=2)
+@isa.pattern("reg", "XORU16(reg, reg)", size=2)
+@isa.pattern("reg", "XORI16(reg, reg)", size=2)
+@isa.pattern("reg", "XORU32(reg, reg)", size=2)
+@isa.pattern("reg", "XORI32(reg, reg)", size=2)
+def pattern_xor_i32(context, tree, c0, c1):
+    d = context.new_reg(RiscObfRegister)
+    context.emit(Xorr(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "XORI32(reg, CONSTI32)",
+    size=2,
+    condition=lambda t: t.children[1].value < 2048,
+)
+def pattern_xor_i32_reg_const(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[1].value
+    context.emit(Xori(d, c0, c1))
+    return d
+
+
+@isa.pattern(
+    "reg",
+    "XORI32(CONSTI32, reg)",
+    size=2,
+    condition=lambda t: t.children[0].value < 2048,
+)
+def pattern_xor_i32_const_reg(context, tree, c0):
+    d = context.new_reg(RiscObfRegister)
+    c1 = tree.children[0].value
+    context.emit(Xori(d, c0, c1))
+    return d
+
+
+def call_internal2(context, name, a, b, clobbers=()):
+    d = context.new_reg(RiscObfRegister)
+    context.move(R12, a)
+    context.move(R13, b)
+    context.emit(RegisterUseDef(uses=(R12, R13)))
+    context.emit(Global(name))
+    context.emit(Bl(LR, name, clobbers=clobbers))
+    context.emit(RegisterUseDef(uses=(R10,)))
+    context.move(d, R10)
+    return d
+
+
+def round_up(s):
+    return s + (16 - s % 16)
+
+
+# Custom runtime handlers I added for multiplication, division and remainder
+# since our riscv core does not implement the 'm' extension ISA.
+
+@isa.pattern("reg", "MULI8(reg, reg)", size=20)
+@isa.pattern("reg", "MULU8(reg, reg)", size=20)
+@isa.pattern("reg", "MULU16(reg, reg)", size=20)
+@isa.pattern("reg", "MULI32(reg, reg)", size=20)
+@isa.pattern("reg", "MULU32(reg, reg)", size=20)
+def pattern_mul_i32_soft(context, tree, c0, c1):
+    return call_internal2(
+        context, "__mulsi3", c0, c1, clobbers=context.arch.caller_save
+    )
+
+@isa.pattern("reg", "DIVI32(reg, reg)", size=20)
+def pattern_div_i32_soft(context, tree, c0, c1):
+    return call_internal2(
+        context, "__divsi3", c0, c1, clobbers=context.arch.caller_save
+    )
+
+@isa.pattern("reg", "DIVU16(reg, reg)", size=20)
+@isa.pattern("reg", "DIVU32(reg, reg)", size=20)
+def pattern_div_u32_soft(context, tree, c0, c1):
+    return call_internal2(
+        context, "__udivsi3", c0, c1, clobbers=context.arch.caller_save
+    )
+
+@isa.pattern("reg", "REMI32(reg, reg)", size=20)
+def pattern_rem_i32_soft(context, tree, c0, c1):
+    return call_internal2(
+        context, "__modsi3", c0, c1, clobbers=context.arch.caller_save
+    )
+
+@isa.pattern("reg", "REMU16(reg, reg)", size=20)
+@isa.pattern("reg", "REMU32(reg, reg)", size=20)
+def pattern_rem_u32_soft(context, tree, c0, c1):
+    return call_internal2(
+        context, "__umodsi3", c0, c1, clobbers=context.arch.caller_save
+    )

@@ -1,0 +1,7 @@
+  wire [31:0] key_input;
+  wire [31:0] instr_key;
+  wire [31:0] instr_dec;
+
+  assign key_input = 32'd[[[ core_crypt_seed ]]] + PC;
+  assign instr_key = (key_input * 32'd1732714) + 32'd1182730741;
+  assign instr_dec = mem_rdata ^ instr_key;

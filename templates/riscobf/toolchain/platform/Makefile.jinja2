@@ -1,0 +1,68 @@
+VERILATOR ?= verilator
+CXX       ?= g++
+AR        ?= ar
+
+TOP       := tb_femto_sdram
+OBJ_DIR   := obj
+BIN_DIR   := bin
+
+MODEL_A   := $(BIN_DIR)/platform.a
+SERVER_A  := $(BIN_DIR)/server.a
+RUNTIME_A := $(BIN_DIR)/verilated_runtime.a
+
+VERILATOR_ROOT := $(shell verilator -V | grep VERILATOR_ROOT | head -n 1 | cut -d'=' -f2)
+
+MODEL_HDR := $(OBJ_DIR)/Vtb_femto_sdram.h
+
+INCFLAGS := -I$(OBJ_DIR) \
+            -I$(VERILATOR_ROOT)/include \
+            -I$(VERILATOR_ROOT)/include/vltstd
+
+CXXFLAGS := -O2 -Wall -Wextra $(INCFLAGS)
+ARFLAGS  := rcs
+
+BOARD_V  := $(wildcard board/*.v)
+
+VRUN_OBJDIR := $(OBJ_DIR)/verilated_runtime
+VRUN_OBJS   := $(VRUN_OBJDIR)/verilated.o \
+               $(VRUN_OBJDIR)/verilated_threads.o \
+               $(VRUN_OBJDIR)/verilated_vcd_c.o
+
+.PHONY: all clean
+all: $(MODEL_A) $(SERVER_A) $(RUNTIME_A)
+
+$(MODEL_HDR) $(OBJ_DIR)/V$(TOP).mk: $(BOARD_V) | $(OBJ_DIR)
+	$(VERILATOR) --cc -Wno-lint -trace --top-module $(TOP) $(BOARD_V) --Mdir $(OBJ_DIR) [[[ "--threads {}".format(sim_thread_count) if multiple_kernels ]]]
+
+$(OBJ_DIR)/Vtb_femto_sdram__ALL.a: $(OBJ_DIR)/V$(TOP).mk
+	$(MAKE) -C $(OBJ_DIR) -f V$(TOP).mk Vtb_femto_sdram__ALL.a
+
+$(MODEL_A): $(OBJ_DIR)/Vtb_femto_sdram__ALL.a | $(BIN_DIR)
+	cp $< $@
+
+$(OBJ_DIR)/server.o: server.cpp $(MODEL_HDR) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(SERVER_A): $(OBJ_DIR)/server.o | $(BIN_DIR)
+	$(AR) $(ARFLAGS) $@ $<
+
+$(VRUN_OBJDIR):
+	mkdir -p $@
+
+$(VRUN_OBJDIR)/verilated.o: | $(VRUN_OBJDIR)
+	$(CXX) $(CXXFLAGS) -c $(VERILATOR_ROOT)/include/verilated.cpp -o $@
+
+$(VRUN_OBJDIR)/verilated_threads.o: | $(VRUN_OBJDIR)
+	$(CXX) $(CXXFLAGS) -c $(VERILATOR_ROOT)/include/verilated_threads.cpp -o $@
+
+$(VRUN_OBJDIR)/verilated_vcd_c.o: | $(VRUN_OBJDIR)
+	$(CXX) $(CXXFLAGS) -DVM_TRACE -c $(VERILATOR_ROOT)/include/verilated_vcd_c.cpp -o $@
+
+$(RUNTIME_A): $(VRUN_OBJS) | $(BIN_DIR)
+	$(AR) $(ARFLAGS) $@ $(VRUN_OBJS)
+
+$(OBJ_DIR) $(BIN_DIR):
+	mkdir -p $@
+
+clean:
+	rm -rf $(OBJ_DIR) $(BIN_DIR)

@@ -1,0 +1,12 @@
+void decrypt_instr(u32 addr, u8* data, u8* dest) {
+    u32* w = (u32*)(data);
+    u32* d = (u32*)(dest);
+
+    u32 k = build_key((INSTR_CRYPT_SEED + addr) & 0xffffffff);
+
+    u32 k0 = k;
+    u32 k1 = (k >> 16) ^ k;
+
+    d[0] = w[0] ^ k0;
+    d[1] = w[1] ^ k1;
+}

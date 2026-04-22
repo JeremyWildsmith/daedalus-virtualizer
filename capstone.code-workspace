@@ -1,0 +1,23 @@
+{
+    "folders": [
+        {
+            "path": "daedalus-cpu"
+        },
+        {
+            "name": "template-riscobf",
+            "path": "templates/riscobf"
+        },
+        {
+            "name": "template-ebpf",
+            "path": "templates/ebpf"
+        },
+        {
+            "name": "libdaedalus",
+            "path": "libdaedalus"
+        },
+        {
+            "name": "test-generated-toolchain",
+            "path": "testing"
+        }
+    ]
+}

@@ -1,0 +1,6 @@
+inline void decrypt_instr(u32 addr, u8* data, u8* dest) {
+    u32* w = (u32*)(data);
+    u32* d = (u32*)(dest);
+    d[0] = w[0];
+    d[1] = w[1];
+}

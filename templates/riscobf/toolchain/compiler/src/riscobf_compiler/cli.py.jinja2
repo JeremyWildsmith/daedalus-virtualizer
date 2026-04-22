@@ -1,0 +1,120 @@
+from argparse import ArgumentParser
+from ppci.api import DummyReportGenerator, COptions, optimize, ir_to_object, objcopy
+from ppci.lang.c import CBuilder
+from pathlib import Path
+from .architecture.riscvobf import RiscObfArch, configure_isa_spec
+from ppci.api import link
+from importlib.resources import files
+from ppci.common import CompilerError
+import subprocess
+import os
+import shutil
+from .instr_crypt import instruction_encrypt_link_result, memory_encrypt_file
+from tempfile import TemporaryDirectory
+import yaml
+
+CORE_ISA = files("riscobf_compiler.data") / "isa.yaml"
+
+MEMORY_MAP_RESOURCE = files("riscobf_compiler.data") / "firmware.mmap"
+FIRMWARE_SOURCE = files("riscobf_compiler.data") / "firmware.c"
+ENTRY_SOURCE = files("riscobf_compiler.data") / "entry.c"
+
+def build_user_obj(march, opts, reporter, name, source):
+    cbuilder = CBuilder(march.info, opts)
+    ir_module = cbuilder.build(source, name, reporter=reporter)
+    reporter.dump_ir(ir_module)
+    
+    # NOTE! Keep optimizer level to 0, it has some issues that breaks the test cases...
+    optimize(ir_module, level=0, reporter=reporter)
+    return ir_to_object([ir_module], march, debug=False, reporter=reporter)
+
+def read_source(file_name, include_directories):
+    
+    include_args = []
+    
+    for i in include_directories:
+        include_args += ["-I", i]
+    
+    try:
+        result = subprocess.run(
+            ["clang", "-E", "-P", *include_args, file_name],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        return result.stdout
+    except FileNotFoundError as e:
+        print("Error, clang was not found. It is necessary for source file preprocessing only. Please ensure it is installed and available on path.")
+        exit(1)
+    except subprocess.CalledProcessError as e:
+        raise CompilerError(f"Preprocessing error on file {file_name}:\n{e.stderr}")
+
+def print_compile_error(error):
+    message = error.msg or ""
+    location = ""
+    
+    if error.loc and error.loc.filename:
+        location = error.loc.filename
+        
+    print("Compile error:")
+    print(f"\t{location}: {message}")
+
+def compile_riscv(source_files, include, output, isa_spec, is_mock):
+    with open(isa_spec, "r") as f:
+        isa = yaml.safe_load(f)
+    
+    configure_isa_spec(isa)
+    
+    reporter = DummyReportGenerator()
+    
+    march = RiscObfArch()
+    opts = COptions()
+    opts.enable("freestanding")
+    
+    try:
+        entry_obj = build_user_obj(march, opts, reporter, "_firmware_entry", read_source(ENTRY_SOURCE, []))
+        firmware_obj = build_user_obj(march, opts, reporter, "_firmware_firmware", read_source(FIRMWARE_SOURCE, []))
+        user_obj = [build_user_obj(march, opts, reporter, s, read_source(s, include)) for s in source_files]
+
+        with open(MEMORY_MAP_RESOURCE, "r") as f:
+            linked = link([entry_obj, firmware_obj] + user_obj, layout=f)
+        
+        
+        [[[ render_section("encrypt_instruction") ]]]
+        
+        print("Compile and linking was successful... Generating the output binary...")
+
+        print("Compile done!")
+
+        if not is_mock:
+            Path(os.path.dirname(output)).mkdir(parents=True, exist_ok=True)
+            
+            objcopy(
+                linked,
+                image_name="mem",
+                fmt="bin",
+                output_filename=f"{output}"
+            )
+
+            [[[ render_section("encrypt_image") ]]]
+            
+    except CompilerError as e:
+        print_compile_error(e)
+        exit(1)
+
+def main():    
+    p = ArgumentParser(description="Compiler to target RISCObf platform.")
+    p.add_argument("input", nargs="+", help="Single c source file to compile.")
+    p.add_argument("--isa", help="ISA Specification File.", required=False)
+    p.add_argument("--output", help="Output directory of compiled binary.", default="./obj")
+    p.add_argument("-I", "--include", nargs="*", help="Include directories", default=[])
+    p.add_argument("--mock", action="store_true", default=False)
+
+    args = p.parse_args()
+    
+    compile_riscv(args.input, args.include, args.output, args.isa or CORE_ISA, args.mock)
+    
+
+if __name__ == "__main__":
+    main()

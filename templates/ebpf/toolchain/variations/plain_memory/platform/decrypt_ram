@@ -1,0 +1,2 @@
+// No encryption
+    mem_rdata = ram[idx];

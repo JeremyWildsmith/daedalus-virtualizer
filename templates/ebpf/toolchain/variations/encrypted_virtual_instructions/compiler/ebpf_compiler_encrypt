@@ -1,0 +1,1 @@
+result = ebpfremap.remap_opcodes(data, opcode_mappings, encrypt_seed=cfg["crypt_seed"])

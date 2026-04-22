@@ -1,0 +1,4 @@
+  wire [32:0] aluMinus = {1'b1, ~aluIn2} + {1'b0, aluIn1} + 33'b1;
+  wire LT = (aluIn1[31] ^ aluIn2[31]) ? aluIn1[31] : aluMinus[32];
+  wire LTU = aluMinus[32];
+  wire EQ = (aluMinus[31:0] == 0);

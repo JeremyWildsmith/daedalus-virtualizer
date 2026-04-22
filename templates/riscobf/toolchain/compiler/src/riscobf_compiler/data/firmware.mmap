@@ -1,0 +1,7 @@
+MEMORY mem LOCATION=0x00000000 SIZE=0x00018000 {
+  ALIGN(4)
+  SECTION(code)
+  SECTION(rodata)
+  SECTION(data)
+  SECTION(bss)
+}

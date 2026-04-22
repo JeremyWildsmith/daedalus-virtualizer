@@ -1,0 +1,51 @@
+`timescale 1ns/1ps
+
+module ram #()(
+  input  wire        clk,
+
+  input  wire [31:0] mem_addr,
+  input  wire [31:0] mem_wdata,
+  input  wire [ 3:0] mem_wmask,
+  output reg  [31:0] mem_rdata,
+  output wire        mem_rbusy,
+  output wire        mem_wbusy,
+
+  input  wire        load_enable,
+  input  wire [31:0] load_addr,
+  input  wire [31:0] load_data
+);
+
+  localparam integer WORDS   = (16*1024*1024) / 4;
+  localparam integer IDXBITS = (WORDS <= 1) ? 1 : $clog2(WORDS);
+
+  reg [31:0] ram [0:WORDS-1];
+
+  wire [31:0] word_addr32 = mem_addr >> 2;
+
+  wire [31:0] load_word_addr32 = load_addr >> 2;
+  wire [IDXBITS-1:0] logical_load_idx  = load_word_addr32[IDXBITS-1:0];
+
+  wire [IDXBITS-1:0] logical_idx = word_addr32[IDXBITS-1:0];
+
+  [[[ render_section("ram_idx_calc") ]]]
+
+  assign mem_rbusy = 1'b0;
+  assign mem_wbusy = 1'b0;
+
+  always @* begin
+    [[[ render_section("decrypt_ram") ]]]
+  end
+
+  [[[ render_section("encrypt_ram") ]]]
+
+  always @(posedge clk) begin
+    if (load_enable) begin
+      [[[ render_section("encrypt_ram_load") ]]]
+    end else if (|mem_wmask) begin
+      if (mem_wmask[0]) ram[idx][ 7: 0] <= mem_wdata_enc[ 7: 0];
+      if (mem_wmask[1]) ram[idx][15: 8] <= mem_wdata_enc[15: 8];
+      if (mem_wmask[2]) ram[idx][23:16] <= mem_wdata_enc[23:16];
+      if (mem_wmask[3]) ram[idx][31:24] <= mem_wdata_enc[31:24];
+    end
+  end
+endmodule

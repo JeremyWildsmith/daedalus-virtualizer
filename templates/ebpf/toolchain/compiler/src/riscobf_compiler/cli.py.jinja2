@@ -1,0 +1,239 @@
+from argparse import ArgumentParser
+from ppci.api import DummyReportGenerator, COptions, optimize, ir_to_object, objcopy
+from ppci.lang.c import CBuilder
+from pathlib import Path
+from .architecture.riscvobf import RiscObfArch, configure_isa_spec
+from ppci.api import link
+from importlib.resources import files
+from ppci.common import CompilerError
+import subprocess
+import os
+import shutil
+from .instr_crypt import instruction_encrypt_link_result, memory_encrypt_file
+from tempfile import TemporaryDirectory
+import yaml
+
+from . import ebpfremap
+
+CORE_ISA = files("riscobf_compiler.data") / "isa.yaml"
+
+MEMORY_MAP_RESOURCE = files("riscobf_compiler.data") / "firmware.mmap"
+FIRMWARE_SOURCE = files("riscobf_compiler.data") / "firmware.c"
+ENTRY_SOURCE = files("riscobf_compiler.data") / "entry.c"
+
+INTERPRETER_STUB = files("riscobf_compiler.data") / "interpreter_stub.c"
+INTERPRETER = files("riscobf_compiler.data") / "interpreter.c"
+INTERPRETER_HEADER_DIR = files("riscobf_compiler.data")
+EBPF_ISA = files("riscobf_compiler.data") / "isa-ebpf.yaml"
+CORE_ISA = files("riscobf_compiler.data") / "isa.yaml"
+
+def build_user_obj(march, opts, reporter, name, source):
+    cbuilder = CBuilder(march.info, opts)
+    ir_module = cbuilder.build(source, name, reporter=reporter)
+    reporter.dump_ir(ir_module)
+    
+    # NOTE! Keep optimizer level to 0, it has some issues that breaks the test cases...
+    optimize(ir_module, level=0, reporter=reporter)
+    return ir_to_object([ir_module], march, debug=False, reporter=reporter)
+
+def read_source(file_name, include_directories):
+    
+    include_args = []
+    
+    for i in include_directories:
+        include_args += ["-I", i]
+    
+    try:
+        result = subprocess.run(
+            ["clang", "-E", "-P", *include_args, file_name],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        return result.stdout
+    except FileNotFoundError as e:
+        print("Error, clang was not found. It is necessary for source file preprocessing only. Please ensure it is installed and available on path.")
+        exit(1)
+    except subprocess.CalledProcessError as e:
+        raise CompilerError(f"Preprocessing error on file {file_name}:\n{e.stderr}")
+
+def print_compile_error(error):
+    message = error.msg or ""
+    location = ""
+    
+    if error.loc and error.loc.filename:
+        location = error.loc.filename
+        
+    print("Compile error:")
+    print(f"\t{location}: {message}")
+
+def compile_riscv(source_files, include, output, isa_spec, is_mock):
+    with open(isa_spec, "r") as f:
+        isa = yaml.safe_load(f)
+    
+    configure_isa_spec(isa)
+    
+    reporter = DummyReportGenerator()
+    
+    march = RiscObfArch()
+    opts = COptions()
+    opts.enable("freestanding")
+    
+    try:
+        entry_obj = build_user_obj(march, opts, reporter, "_firmware_entry", read_source(ENTRY_SOURCE, []))
+        firmware_obj = build_user_obj(march, opts, reporter, "_firmware_firmware", read_source(FIRMWARE_SOURCE, []))
+        user_obj = [build_user_obj(march, opts, reporter, s, read_source(s, include)) for s in source_files]
+
+        with open(MEMORY_MAP_RESOURCE, "r") as f:
+            linked = link([entry_obj, firmware_obj] + user_obj, layout=f)
+        
+        
+        [[[ render_section("encrypt_instruction") ]]]
+        
+        print("Compile and linking was successful... Generating the output binary...")
+        
+        if not is_mock:
+            Path(os.path.dirname(output)).mkdir(parents=True, exist_ok=True)
+            objcopy(
+                linked,
+                image_name="mem",
+                fmt="bin",
+                output_filename=f"{output}"
+            )
+
+            [[[ render_section("encrypt_image") ]]]
+
+        print("Compile done!")
+            
+    except CompilerError as e:
+        print_compile_error(e)
+        exit(1)
+
+
+def compile_ebpf(source_files, include, output):
+    def make_obj_old(source, dest):
+        subprocess.run([
+            'clang',
+            '-target',
+            "bpfel",
+            "-O1", "-fno-inline", "-mcpu=v1", "-ffreestanding", "-fno-builtin", "-nostdlib",
+            "-ffunction-sections", "-fdata-sections",
+            *include_args,
+            "-c", source,
+            '-o', dest], 
+            text=True, 
+            check=True
+        )
+        
+    def make_obj(source, dest):
+        subprocess.run([
+            'bpf-gcc',
+            "-O1", "-mcpu=v1", "-Wno-error=incompatible-pointer-types", "-mno-jmpext", "-fno-builtin",
+            "-fno-stack-protector", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-ffreestanding",
+            "-fno-inline", "-ffunction-sections", "-fdata-sections", "-fno-common", "-fno-jump-tables", "-fno-merge-constants", "-fno-ipa-cp", "-fno-optimize-sibling-calls",
+            *include_args,
+            "-c", source,
+            '-o', dest], 
+            text=True, 
+            check=True
+        )
+
+    linker_script = files("riscobf_compiler.data") / "ebpf.ld"
+    with TemporaryDirectory() as d:
+        # clang -target bpfel -O0 \
+        # -ffreestanding -fno-builtin -nostdlib \
+        # -ffunction-sections -fdata-sections \
+        # -c "$SRC" -o "$OBJ"
+        include_args = [f"-I{p}" for p in include] + [f"-I{str(INTERPRETER_HEADER_DIR)}"]
+        
+        src_objs = []
+        
+        for s in source_files:
+            dest_name = f"{d}/{os.path.basename(s)}.o"
+            make_obj(s, dest_name)
+            src_objs.append(dest_name)
+        
+        make_obj(FIRMWARE_SOURCE, f"{d}/_firmware.o")
+        
+        # bpf-ld.bfd -T "$LDS" --entry=main --no-undefined --gc-sections \
+        # -o "$ELF" "$OBJ"
+        subprocess.run([
+            'bpf-ld.bfd',
+            '-T', str(linker_script),
+            "--entry=main",
+            f"-o{d}/compiled.elf",
+            *src_objs, f"{d}/_firmware.o"], 
+            text=True, 
+            check=True
+        )
+        
+        #llvm-objcopy-21 -O binary \
+        #-j .text -j .rodata -j .data \
+        #"$ELF" "$OUT"
+        subprocess.run([
+            'llvm-objcopy-14',
+            '-O', "binary",
+            "-j", ".text",
+            "-j", ".rodata",
+            "-j", ".data",
+            f"{d}/compiled.elf",
+            output],
+            text=True, 
+            check=True
+        )
+
+def remap_ebpf(ebpf_isa_config, bin_data):
+    with open(bin_data, "rb") as f:
+        data = f.read()
+    
+    opcode_mappings = {}
+    
+    with open(ebpf_isa_config, "r") as f:
+        cfg = yaml.safe_load(f)
+                
+    for e in cfg["encoding"]:
+        opcode_mappings[e["native"]] = e["target"]
+
+    [[[ render_section('ebpf_compiler_encrypt') ]]]
+
+    with open(bin_data, "wb") as f:
+        f.write(result)
+
+def main():    
+    p = ArgumentParser(description="Compiler to target RISCObf platform.")
+    p.add_argument("input", nargs="+", help="Single c source file to compile.")
+    p.add_argument("--isa", help="ISA Specification File.", required=False)
+    p.add_argument("--ebpf-isa", help="EBPF ISA Specification file", required=False)
+    p.add_argument("--output", help="Output directory of compiled binary.", default="./obj")
+    p.add_argument("-I", "--include", nargs="*", help="Include directories", default=[])
+    p.add_argument("--mock", action="store_true", default=False)
+
+    args = p.parse_args()
+    
+    
+    with TemporaryDirectory() as d:
+        ebpf_output = Path(d) / "vm.ebpf"
+        ebpf_source_embedding = Path(d) / "vm.c"
+        
+        compile_ebpf(args.input, args.include, ebpf_output)
+        
+        remap_ebpf(args.ebpf_isa or EBPF_ISA, ebpf_output)
+        
+        result = subprocess.run(['xxd', '-i', "-n", 'ebpf_firmware_bin', ebpf_output],
+                        capture_output=True,
+                        text=True, 
+                        check=True)
+        
+        with open(ebpf_source_embedding, "w") as f:
+            f.write(result.stdout.strip())
+        
+        compile_riscv([str(INTERPRETER), str(INTERPRETER_STUB), str(ebpf_source_embedding)], args.include, args.output, args.isa or CORE_ISA, args.mock)
+        
+        dump_name = f"{args.output}vm.ebp"
+        shutil.copy(str(ebpf_output), dump_name)
+        print("The vm image was dumped. Assuming no obfuscation encodings were applied, it can be disassembled using the following command")
+        print(f"\tr2 -a bpf -b 64 -e cfg.bigendian=false \"{dump_name}\"")
+
+if __name__ == "__main__":
+    main()

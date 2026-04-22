@@ -1,0 +1,1 @@
+ram[load_idx] <= load_data;
