@@ -1,8 +1,9 @@
 # Daedalus
 
-Daedalus is a secure application development platform designed to help protect software from reverse engineering and intellectual property theft. It does this by transforming protected code into a generated secret schema that cannot be easily deconstructed, while still allowing it to execute on a regular computer system. This process is generally known as code virtualization based obfuscation.
+Daedalus is a toolchain to develop applications using the code virtualization based code obfuscation pattern and it works by generating security toolchains which consist of a compiler portion and interpreter portion, each with various variations injected into them for each generation. The generated toolchain is a co-synthesized pair, the compiler portion of the generates code and the interpreter portion executes it.
 
-The core idea behind Daedalus is to extrapolate the idea of code obfuscation by virtualization beyond a software interpreter and as close to a hardware interpreter core as possible while being constrainted in a software system. Daedalus achieves this by leveraging the Verilator hardware description language simulation tool. 
+
+The core idea behind Daedalus, and what makes it an interesting application of code-virtualization based obfuscation is that it extrapolates the idea of code obfuscation by virtualization beyond a software interpreter and as close to a hardware interpreter core as possible while being constrainted in a software system. Daedalus achieves this by leveraging the Verilator hardware description language simulation tool. 
 
 ---
 
@@ -15,7 +16,9 @@ Daedalus synthesizes a **security toolchain** for each project. This toolchain c
 - A secure enclave platform realized through simulated RTL hardware using Verilator
 - A message passing layer allowing protected and unprotected code to communicate
 
-The result is that no two protected projects are alike. Different synthesis seeds and feature selections can produce unique execution platforms, opcode layouts, encryption keys, and behavioral variations.
+From the perspective of a user (developer), you develop your application as two discrete sub-applications which communicate via message passing. One portion executes in a regular environment and does not suffer any performance penalty, while the other portion executes in the highly constrainted secure enclave where it trades performance off for security.
+
+Daedalus' toolchain synthesis pipelines makes every attempt to work such that no two generated security-toolchains are alike. Different synthesis seeds and feature selections can produce unique execution platforms, opcode layouts, encryption keys, compiler code generation semantics, and behavioral variations.
 
 ---
 
@@ -36,10 +39,9 @@ This allows developers to keep performance-sensitive or ordinary code native, wh
 
 Example use cases:
 
-- Product key verification
 - DRM or license enforcement
 - Anti-tamper routines
-- Proprietary algorithms or sensitive decision logic
+- Proprietary algorithms
 
 ---
 
@@ -55,7 +57,7 @@ Depending on archetype and configuration, Daedalus can synthesize toolchains wit
 - Concurrent execution of the virtualized core (i.e the RTL Simulation of the secure encalve core is partitioned and executed concurrently on multiple system cores.)
 - Multi-layer virtualization (Labyrinth Archetype)
 
-These features are intended to significantly increase the effort required for static analysis, dynamic instrumentation, memory dumping, and reverse engineering.
+These features are intended to increase the effort required for static analysis and reverse engineering.
 
 ---
 
@@ -63,15 +65,15 @@ These features are intended to significantly increase the effort required for st
 
 ### Foundry
 
-A modified RISC-V based secure enclave implemented in Verilog and compiled through Verilator. Foundry supports encryption, memory scrambling, opcode remapping, and other synthesis-time variations.
+A modified RISC-V based secure enclave implemented in Verilog and compiled through Verilator.
 
 ### Labyrinth
 
-Built over Foundry, Labyrinth adds an additional software virtualization layer using a protected eBPF-style VM. This creates multiple layers of code virtualization.
+Built over Foundry, Labyrinth adds an additional software virtualization layer using a protected eBPF-style VM. This creates multiple layers of code virtualization. It also allow for another layer of instruction encryption to become available.
 
 ---
 
-## Quick Start (Docker)
+## Quick Start - Docker
 
 ```bash
 git clone https://github.com/JeremyWildsmith/daedalus-virtualizer.git
@@ -83,8 +85,12 @@ docker run --rm -it daedalus
 Once inside the container:
 
 ```bash
+# Create a user project
 dacpu-init
-dacpu-test
+cd ./<project-name>
+make
+#execute the generated binary image
+cd ./bin/<project-name>
 ```
 
 ---
@@ -97,13 +103,7 @@ Use the project wizard:
 dacpu-init
 ```
 
-This interactive setup allows you to choose:
-
-- Archetype
-- Generation seed
-- Security features
-- Variations
-- Concurrent kernel support
+This interactive setup allows you to configure your Daedalus project and security toolchain.
 
 After generation:
 
@@ -115,7 +115,7 @@ make
 
 ---
 
-## Example Concept
+## Example Use Case
 
 Consider a scenario where a software vendor wants to protect their license verification logic. Instead of shipping the verification routine directly in native code, the algorithm is placed inside the Daedalus secure enclave. The user interface and normal application logic remain native, while only the verification logic executes inside the protected environment.
 
@@ -274,44 +274,9 @@ void main() {
 ```
 4. Use the make command to generate the secure binary. Invoke the binary in ./bin/secure-app, see if you can capture the flag without looking at the source code :)
 
+## License
 
----
-
-## Project Goals
-
-Daedalus explores the intersection of:
-
-- Compiler synthesis
-- Hardware simulation
-- Code virtualization
-- Obfuscation research
-- Secure execution environments
-- Reverse engineering resistance
-
-It is both a practical development platform and a research project into new approaches for protecting distributed software.
-
----
-
-## Requirements
-
-Typical Linux build environment:
-
-- Python 3.11+
-- Verilator 5+
-- GCC / build-essential
-- make
-- clang
-- Docker (optional)
-
-See project documentation for full setup steps.
-
----
-
-## Repository
-
-https://github.com/JeremyWildsmith/daedalus-virtualizer
-
----
+MIT License (See LICENSE and LICENSE-3RD-PARTY)
 
 ## Author
 
