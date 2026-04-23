@@ -41,11 +41,10 @@ static unsigned int fnvHash(const char* str)
 void main() {
     char buffer[512];
     
-    for(int i = 0; i < 100; i++) {
+    for(;;) {
         read_str(buffer, 512, 0);
         
         if(buffer[0] == 0) {
-            i--;
             continue;
         }
 
