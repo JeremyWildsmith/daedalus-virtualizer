@@ -3,6 +3,7 @@
 #endif
 
 #include "interpreter.h"
+#include "arithmatic64.h"
 
 #define DST(i) ((i.reg) & 0xf)
 #define SRC(i) ((i.reg) >> 4)
@@ -76,671 +77,384 @@
 #define JMP_EXIT [[[ jmp_exit ]]]
 #define LDIMM64 [[[ ldimm64 ]]]
 
-#define WORD_BITS 32u
-#define DWORD_BITS 64u
-
 typedef struct {
-    u32 lo;
-    u32 hi;
-} reg64_t;
-
-struct call_frame {
-    u32 ret_pc;
-    reg64_t saved[FRAME_REGS];
-};
-
-static struct call_frame frames[MAX_CALL_DEPTH];
-static reg64_t r[11];
-static u8 stack[MAX_CALL_DEPTH * BPF_FRAME_SIZE];
-static u32 retsp = 0;
+	u32 ret_pc;
+	ua64 ctx[FRAME_REGS];
+} call_frame;
 
 static inline u32 build_key(u32 seed) {
-    return seed * 1732714u + 1182730741u;
+	return seed * 1732714u + 1182730741u;
 }
 
-inline void decrypt_instr(u32 addr, u8* data, u8* dest) {
-    u32* w = (u32*)(data);
-    u32* d = (u32*)(dest);
-    d[0] = w[0];
-    d[1] = w[1];
-}
+[[[ render_section("ebpf_interpreter_decrypt") ]]]
 
-static reg64_t reg_zero(void)
+static u32 translate_host(u32 base_address, s32 image_size, u32 addr)
 {
-    reg64_t x;
-    x.lo = 0;
-    x.hi = 0;
-    return x;
+	//A hack to allow for MMIO writes but ALSO allow the image to write to its global memory space.
+	return (addr < (u32)image_size) ? (base_address + addr) : addr;
 }
 
-static reg64_t reg_from_u32(u32 v)
+static u8 load_u8(u32 base_address, s32 image_size, u32 addr)
 {
-    reg64_t x;
-    x.lo = v;
-    x.hi = 0;
-    return x;
+	u32 p = translate_host(base_address, image_size, addr);
+	return *(u8*)p;
 }
 
-static reg64_t reg_from_s32(s32 v)
+static u16 load_u16(u32 base_address, s32 image_size, u32 addr)
 {
-    reg64_t x;
-    x.lo = (u32)v;
-    x.hi = (v < 0) ? 0xffffffffu : 0u;
-    return x;
+	u32 p = translate_host(base_address, image_size, addr);
+	return *(u16*)p;
 }
 
-static int reg_is_zero(reg64_t a)
+static u32 load_u32(u32 base_address, s32 image_size, u32 addr)
 {
-    return a.lo == 0 && a.hi == 0;
+	u32 p = translate_host(base_address, image_size, addr);
+	return *(u32*)p;
 }
 
-static int reg_eq(reg64_t a, reg64_t b)
+static ua64 load_ua64(u32 base_address, s32 image_size, u32 addr)
 {
-    return a.lo == b.lo && a.hi == b.hi;
+	ua64 x;
+	u32 p = translate_host(base_address, image_size, addr);
+	x.lower = *(u32*)p;
+	x.upper = *(u32*)(p + 4u);
+	return x;
 }
 
-static int reg_ne(reg64_t a, reg64_t b)
+static void store_u8(u32 base_address, s32 image_size, u32 addr, u8 v)
 {
-    return !reg_eq(a, b);
-}
-
-static int reg_gt_u(reg64_t a, reg64_t b)
-{
-    if (a.hi != b.hi) return a.hi > b.hi;
-    return a.lo > b.lo;
-}
-
-static int reg_ge_u(reg64_t a, reg64_t b)
-{
-    if (a.hi != b.hi) return a.hi > b.hi;
-    return a.lo >= b.lo;
-}
-
-static int reg_lt_s(reg64_t a, reg64_t b)
-{
-    s32 ahi = (s32)a.hi;
-    s32 bhi = (s32)b.hi;
-    if (ahi != bhi) return ahi < bhi;
-    return a.lo < b.lo;
-}
-
-static int reg_le_s(reg64_t a, reg64_t b)
-{
-    s32 ahi = (s32)a.hi;
-    s32 bhi = (s32)b.hi;
-    if (ahi != bhi) return ahi < bhi;
-    return a.lo <= b.lo;
-}
-
-static int reg_gt_s(reg64_t a, reg64_t b)
-{
-    s32 ahi = (s32)a.hi;
-    s32 bhi = (s32)b.hi;
-    if (ahi != bhi) return ahi > bhi;
-    return a.lo > b.lo;
-}
-
-static int reg_ge_s(reg64_t a, reg64_t b)
-{
-    s32 ahi = (s32)a.hi;
-    s32 bhi = (s32)b.hi;
-    if (ahi != bhi) return ahi > bhi;
-    return a.lo >= b.lo;
-}
-
-static reg64_t reg_not(reg64_t a)
-{
-    reg64_t x;
-    x.lo = ~a.lo;
-    x.hi = ~a.hi;
-    return x;
-}
-
-static reg64_t reg_neg(reg64_t a)
-{
-    reg64_t x = reg_not(a);
-    u32 old = x.lo;
-    x.lo += 1u;
-    if (x.lo < old) x.hi += 1u;
-    return x;
-}
-
-static reg64_t reg_add(reg64_t a, reg64_t b)
-{
-    reg64_t x;
-    u32 old = a.lo;
-    x.lo = a.lo + b.lo;
-    x.hi = a.hi + b.hi + ((x.lo < old) ? 1u : 0u);
-    return x;
-}
-
-static reg64_t reg_sub(reg64_t a, reg64_t b)
-{
-    reg64_t x;
-    x.lo = a.lo - b.lo;
-    x.hi = a.hi - b.hi - ((a.lo < b.lo) ? 1u : 0u);
-    return x;
-}
-
-static reg64_t reg_and(reg64_t a, reg64_t b)
-{
-    reg64_t x;
-    x.lo = a.lo & b.lo;
-    x.hi = a.hi & b.hi;
-    return x;
-}
-
-static reg64_t reg_or(reg64_t a, reg64_t b)
-{
-    reg64_t x;
-    x.lo = a.lo | b.lo;
-    x.hi = a.hi | b.hi;
-    return x;
-}
-
-static reg64_t reg_xor(reg64_t a, reg64_t b)
-{
-    reg64_t x;
-    x.lo = a.lo ^ b.lo;
-    x.hi = a.hi ^ b.hi;
-    return x;
-}
-
-static reg64_t reg_set_bit(u32 bit)
-{
-    reg64_t x = reg_zero();
-    if (bit < 32u) x.lo = 1u << bit;
-    else if (bit < 64u) x.hi = 1u << (bit - 32u);
-    return x;
-}
-
-
-// Reimplementation of this algorithim: https://android.googlesource.com/toolchain/compiler-rt/+/release_32/lib/ashldi3.c
-static reg64_t reg_lsh(reg64_t a, u32 sh)
-{
-    reg64_t input;
-    reg64_t result;
-
-    input = a;
-    if (sh & WORD_BITS) {
-        result.lo = 0;
-        result.hi = (sh >= DWORD_BITS) ? 0 : (input.lo << (sh - WORD_BITS));
-    } else {
-        if (sh == 0)
-            return a;
-        result.lo = input.lo << sh;
-        result.hi = (input.hi << sh) | (input.lo >> (WORD_BITS - sh));
-    }
-    return result;
-}
-
-// Reimplementation of this algorithm: https://github.com/torvalds/linux/blob/master/lib/lshrdi3.c
-static reg64_t reg_rsh(reg64_t a, u32 sh)
-{
-    if (sh == 0)
-        return a;
-
-        reg64_t input;
-    reg64_t result;
-
-    input = a;
-    // Check if it is less than 0 (sign bit is set)
-    if (sh & WORD_BITS) {
-        result.hi = 0;
-        result.lo = (sh >= DWORD_BITS) ? 0 : (input.hi >> (sh - WORD_BITS));
-    } else {
-        result.hi = input.hi >> sh;
-        result.lo = (input.hi << (WORD_BITS - sh)) | (input.lo >> sh);
-    }
-    return result;
-}
-
-// Reimplementation of this algorithm for 64 bit shift: https://github.com/llvm-mirror/compiler-rt/blob/master/lib/builtins/ashrdi3.c
-static reg64_t reg_arsh(reg64_t a, u32 sh)
-{
-    reg64_t input;
-    reg64_t result;
-
-    input = a;
-    if (sh & WORD_BITS) {
-        result.hi = ((s32)input.hi < 0) ? -1 : 0u;
-        result.lo = (u32)(((s32)input.hi) >> (sh - WORD_BITS));
-    } else {
-        if (sh == 0)
-            return a;
-        result.hi = (u32)(((s32)input.hi) >> sh);
-        result.lo = ((u32)input.hi << (WORD_BITS - sh)) | (input.lo >> sh);
-    }
-    return result;
-}
-
-//Use algorithm: "Restoring division" from https://en.wikipedia.org/wiki/Division_algorithm
-static void reg_udivmod(reg64_t num, reg64_t den, reg64_t* q, reg64_t* rem)
-{
-    reg64_t quotient = reg_zero();
-    reg64_t remainder = reg_zero();
-    u32 bit;
-
-    if (reg_is_zero(den)) {
-        *q = reg_zero();
-        *rem = reg_zero();
-        return;
-    }
-
-    //Basically we just do long division but on binary digits.
-    for (bit = 63; bit >= 0; bit--) {
-        //Shift left
-        remainder = reg_lsh(remainder, 1u);
-        
-        // Select either the upper or lower u32 part
-        if (bit >= 32u) {
-            remainder.lo |= (num.hi >> (bit - 32)) & 1u;
-        }
-        else {
-            remainder.lo |= (num.lo >> bit) & 1;
-        }
-
-        if (reg_ge_u(remainder, den)) {
-            remainder = reg_sub(remainder, den);
-            quotient = reg_or(quotient, reg_set_bit(bit));
-        }
-    }
-
-    *q = quotient;
-    *rem = remainder;
-}
-
-
-// Reimplementation from: https://github.com/hcs0/Hackers-Delight/blob/master/mulmnu.c.txt
-static reg64_t reg_mul(reg64_t a, reg64_t b)
-{
-    unsigned short u[4], v[4], w[8];
-    reg64_t r;
-    unsigned int k, t;
-    int i, j;
-
-    u[0] = (unsigned short)(a.lo);
-    u[1] = (unsigned short)(a.lo >> 16);
-    u[2] = (unsigned short)(a.hi);
-    u[3] = (unsigned short)(a.hi >> 16);
-
-    v[0] = (unsigned short)(b.lo);
-    v[1] = (unsigned short)(b.lo >> 16);
-    v[2] = (unsigned short)(b.hi);
-    v[3] = (unsigned short)(b.hi >> 16);
-
-    for (i = 0; i < 4; i++)
-        w[i] = 0;
-
-    for (j = 0; j < 4; j++) {
-        k = 0;
-        for (i = 0; i < 4; i++) {
-            t = u[i] * v[j] + w[i + j] + k;
-            w[i + j] = (unsigned short)t;
-            k = t >> 16;
-        }
-        w[j + 4] = (unsigned short)k;
-    }
-
-    r.lo = (u32)w[0] | ((u32)w[1] << 16);
-    r.hi = (u32)w[2] | ((u32)w[3] << 16);
-    return r;
-}
-
-static u32 addr_to_host(u32 base_address, s32 image_size, u32 addr)
-{
-    if (addr < (u32)image_size) return base_address + addr;
-    return addr;
-}
-
-static u8 mem_ld_b(u32 base_address, s32 image_size, u32 addr)
-{
-    u32 p = addr_to_host(base_address, image_size, addr);
-    return *(u8*)p;
-}
-
-static u16 mem_ld_h(u32 base_address, s32 image_size, u32 addr)
-{
-    u32 p = addr_to_host(base_address, image_size, addr);
-    return *(u16*)p;
-}
-
-static u32 mem_ld_w(u32 base_address, s32 image_size, u32 addr)
-{
-    u32 p = addr_to_host(base_address, image_size, addr);
-    return *(u32*)p;
-}
-
-static reg64_t mem_ld_dw(u32 base_address, s32 image_size, u32 addr)
-{
-    reg64_t x;
-    u32 p = addr_to_host(base_address, image_size, addr);
-    x.lo = *(u32*)p;
-    x.hi = *(u32*)(p + 4u);
-    return x;
-}
-
-static void mem_st_b(u32 base_address, s32 image_size, u32 addr, u8 v)
-{
-    u32 p = addr_to_host(base_address, image_size, addr);
+	u32 p = translate_host(base_address, image_size, addr);
 #ifdef debug_linux_host
-    if (p == 0x10000000u) {
-        printf("%c", (char)v);
-        return;
-    }
+	if (p == 0x10000000u) {
+		printf("%c", (char)v);
+		return;
+	}
 #endif
-    * (u8*)p = v;
+	* (u8*)p = v;
 }
 
-static void mem_st_h(u32 base_address, s32 image_size, u32 addr, u16 v)
+static void mem_st_u16(u32 base_address, s32 image_size, u32 addr, u16 v)
 {
-    u32 p = addr_to_host(base_address, image_size, addr);
-    *(u16*)p = v;
+	u32 p = translate_host(base_address, image_size, addr);
+	*(u16*)p = v;
 }
 
-static void mem_st_w(u32 base_address, s32 image_size, u32 addr, u32 v)
+static void store_u32(u32 base_address, s32 image_size, u32 addr, u32 v)
 {
-    u32 p = addr_to_host(base_address, image_size, addr);
+	u32 p = translate_host(base_address, image_size, addr);
 #ifdef debug_linux_host
-    if (p == 0x10000000) {
-        printf("%c", (char)v);
-        return;
-    }
+	if (p == 0x10000000) {
+		printf("%c", (char)v);
+		return;
+	}
 #endif
 
-    * (u32*)p = v;
+	*(u32*)p = v;
 }
 
-static void mem_st_dw(u32 base_address, s32 image_size, u32 addr, reg64_t v)
+static void store_ua64(u32 base_address, s32 image_size, u32 addr, ua64 v)
 {
-    u32 p = addr_to_host(base_address, image_size, addr);
-    *(u32*)p = v.lo;
-    *(u32*)(p + 4u) = v.hi;
+	u32 p = translate_host(base_address, image_size, addr);
+	*(u32*)p = v.lower;
+	*(u32*)(p + 4u) = v.upper;
 }
+
+//We make these static to prevent too much stack allocation in ebpf_exec
+//which can start to cause issues...
+static u8 stack[MAX_CALL_DEPTH * BPF_FRAME_SIZE];
+static call_frame frames[MAX_CALL_DEPTH];
 
 u32 ebpf_exec(u32 base_address, s32 image_size)
 {
-    s32 pc = 0;
-    int j;
+	s32 pc = 0;
 
-    for (j = 0; j < 11; j++) r[j] = reg_zero();
-    retsp = 0;
-    r[10].lo = (u32)(stack + sizeof(stack));
-    r[10].hi = 0;
+	//Shared handler state variables
+	int j;     //Indexer, for register ops
+	ua64* d;   //Destination pointer
+	ua64 s;    //Source register operand
+	ua64 kreg; //Immediate operand value, evaluated from register.
+	ua64 q;    //Quotient output
+	ua64 rem;  //Remainder output
 
-    for (;;) {
-        //printf("%x", pc * INSTR_SIZE);
-        struct insn i;
-        decrypt_instr(pc * INSTR_SIZE, (u8*)base_address + ((u32)pc * INSTR_SIZE), &i);
 
-        reg64_t* d;
-        reg64_t s;
-        reg64_t kreg;
-        u32 addr;
-        reg64_t q;
-        reg64_t rem;
+	ua64 r[FRAME_REGS]; //R0 -> R10 (Inclusive)
 
-        //printf("!%X!\n", pc * 8);
+	for (j = 0; j < FRAME_REGS; j++) {
+		r[j].upper = 0;
+		r[j].lower = 0;
+	}
 
-        pc++;
-        d = &r[DST(i)];
-        s = r[SRC(i)];
-        kreg = reg_from_s32(i.imm);
-        reg64_t ukreg = reg_from_u32(i.imm);
+	u32 retsp = 0; //The current return stack pointer index in stack frames.
 
-        switch (i.op) {
-        case ALU64_ADD_K:
-            *d = reg_add(*d, kreg);
-            break;
-        case ALU64_ADD_X:
-            *d = reg_add(*d, s);
-            break;
 
-        case ALU64_SUB_K:
-            *d = reg_sub(*d, kreg);
-            break;
-        case ALU64_SUB_X:
-            *d = reg_sub(*d, s);
-            break;
+	r[10].lower = (u32)(stack + sizeof(stack));
+	r[10].upper = 0;
 
-        case ALU64_MUL_K:
-            *d = reg_mul(*d, kreg);
-            break;
-        case ALU64_MUL_X:
-            *d = reg_mul(*d, s);
-            break;
+	for (;;) {
+		struct insn i;
 
-        case ALU64_DIV_K:
-            if (!reg_is_zero(kreg)) {
-                reg_udivmod(*d, kreg, &q, &rem);
-                *d = q;
-            }
-            break;
-        case ALU64_DIV_X:
-            if (!reg_is_zero(s)) {
-                reg_udivmod(*d, s, &q, &rem);
-                *d = q;
-            }
-            break;
+		decrypt_instr(pc * INSTR_SIZE, (u8*)base_address + ((u32)pc * INSTR_SIZE), &i);
 
-        case ALU64_MOD_K:
-            if (!reg_is_zero(kreg)) {
-                reg_udivmod(*d, kreg, &q, &rem);
-                *d = rem;
-            }
-            break;
-        case ALU64_MOD_X:
-            if (!reg_is_zero(s)) {
-                reg_udivmod(*d, s, &q, &rem);
-                *d = rem;
-            }
-            break;
+		pc++;
+		d = &r[DST(i)];
+		s = r[SRC(i)];
+		kreg = a64_from_s32(i.imm);
+		ua64 ukreg = a64_from_u32(i.imm);
 
-        case ALU64_AND_K:
-            *d = reg_and(*d, ukreg);
-            break;
-        case ALU64_AND_X:
-            *d = reg_and(*d, s);
-            break;
+		switch (i.op) {
+		case ALU64_ADD_K:
+			*d = a64_add(*d, kreg);
+			break;
+		case ALU64_ADD_X:
+			*d = a64_add(*d, s);
+			break;
 
-        case ALU64_OR_K:
-            *d = reg_or(*d, ukreg);
-            break;
-        case ALU64_OR_X:
-            *d = reg_or(*d, s);
-            break;
+		case ALU64_SUB_K:
+			*d = a64_sub(*d, kreg);
+			break;
+		case ALU64_SUB_X:
+			*d = a64_sub(*d, s);
+			break;
 
-        case ALU64_XOR_K:
-            *d = reg_xor(*d, ukreg);
-            break;
-        case ALU64_XOR_X:
-            *d = reg_xor(*d, s);
-            break;
+		case ALU64_MUL_K:
+			*d = a64_mul(*d, kreg);
+			break;
+		case ALU64_MUL_X:
+			*d = a64_mul(*d, s);
+			break;
 
-        case ALU64_MOV_K:
-            *d = kreg;
-            break;
-        case ALU64_MOV_X:
-            *d = s;
-            break;
+		case ALU64_DIV_K:
+			if (!a64_is_zero(kreg)) {
+				a64_udivmod(*d, kreg, &q, &rem);
+				*d = q;
+			}
+			break;
+		case ALU64_DIV_X:
+			if (!a64_is_zero(s)) {
+				a64_udivmod(*d, s, &q, &rem);
+				*d = q;
+			}
+			break;
 
-        case ALU64_NEG:
-            *d = reg_neg(*d);
-            break;
+		case ALU64_MOD_K:
+			if (!a64_is_zero(kreg)) {
+				a64_udivmod(*d, kreg, &q, &rem);
+				*d = rem;
+			}
+			break;
+		case ALU64_MOD_X:
+			if (!a64_is_zero(s)) {
+				a64_udivmod(*d, s, &q, &rem);
+				*d = rem;
+			}
+			break;
 
-        case ALU64_LSH_K:
-            *d = reg_lsh(*d, (u32)i.imm);
-            break;
+		case ALU64_AND_K:
+			*d = a64_and(*d, ukreg);
+			break;
+		case ALU64_AND_X:
+			*d = a64_and(*d, s);
+			break;
 
-        case ALU64_LSH_X:
-            *d = reg_lsh(*d, s.lo & 63u);
-            break;
+		case ALU64_OR_K:
+			*d = a64_or(*d, ukreg);
+			break;
+		case ALU64_OR_X:
+			*d = a64_or(*d, s);
+			break;
 
-        case ALU64_RSH_K:
-            *d = reg_rsh(*d, (u32)i.imm);
-            break;
-        case ALU64_RSH_X:
-            *d = reg_rsh(*d, s.lo & 63u);
-            break;
+		case ALU64_XOR_K:
+			*d = a64_xor(*d, ukreg);
+			break;
+		case ALU64_XOR_X:
+			*d = a64_xor(*d, s);
+			break;
 
-        case ALU64_ARSH_K:
-            *d = reg_arsh(*d, (u32)i.imm);
-            break;
-        case ALU64_ARSH_X:
-            *d = reg_arsh(*d, s.lo & 63u);
-            break;
+		case ALU64_MOV_K:
+			*d = kreg;
+			break;
+		case ALU64_MOV_X:
+			*d = s;
+			break;
 
-        case LDX_MEM_B:
-            d->lo = mem_ld_b(base_address, image_size, s.lo + (u32)(s32)i.off);
-            d->hi = 0;
-            break;
-        case LDX_MEM_H:
-            d->lo = mem_ld_h(base_address, image_size, s.lo + (u32)(s32)i.off);
-            d->hi = 0;
-            break;
-        case LDX_MEM_W:
-            d->lo = mem_ld_w(base_address, image_size, s.lo + (u32)(s32)i.off);
-            d->hi = 0;
-            break;
-        case LDX_MEM_DW:
-            *d = mem_ld_dw(base_address, image_size, s.lo + (u32)(s32)i.off);
-            break;
+		case ALU64_NEG:
+			*d = a64_neg(*d);
+			break;
 
-        case STX_MEM_B:
-            mem_st_b(base_address, image_size, d->lo + (u32)(s32)i.off, (u8)s.lo);
-            break;
-        case STX_MEM_H:
-            mem_st_h(base_address, image_size, d->lo + (u32)(s32)i.off, (u16)s.lo);
-            break;
-        case STX_MEM_W:
-            mem_st_w(base_address, image_size, d->lo + (u32)(s32)i.off, s.lo);
-            break;
-        case STX_MEM_DW:
-            mem_st_dw(base_address, image_size, d->lo + (u32)(s32)i.off, s);
-            break;
+		case ALU64_LSH_K:
+			*d = a64_lsh(*d, (u32)i.imm);
+			break;
 
-        case ST_MEM_B:
-            mem_st_b(base_address, image_size, d->lo + (u32)(s32)i.off, (u8)i.imm);
-            break;
-        case ST_MEM_H:
-            mem_st_h(base_address, image_size, d->lo + (u32)(s32)i.off, (u16)i.imm);
-            break;
-        case ST_MEM_W:
-            mem_st_w(base_address, image_size, d->lo + (u32)(s32)i.off, (u32)i.imm);
-            break;
-        case ST_MEM_DW:
-            mem_st_dw(base_address, image_size, d->lo + (u32)(s32)i.off, kreg);
-            break;
+		case ALU64_LSH_X:
+			*d = a64_lsh(*d, s.lower);
+			break;
 
-        case JMP_JA:
-            pc += i.off;
-            break;
+		case ALU64_RSH_K:
+			*d = a64_rsh(*d, (u32)i.imm);
+			break;
+		case ALU64_RSH_X:
+			*d = a64_rsh(*d, s.lower);
+			break;
 
-        case JMP_JEQ_K:
-            if (reg_eq(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JEQ_X:
-            if (reg_eq(*d, s)) pc += i.off;
-            break;
+		case ALU64_ARSH_K:
+			*d = a64_arsh(*d, (u32)i.imm);
+			break;
+		case ALU64_ARSH_X:
+			*d = a64_arsh(*d, s.lower);
+			break;
 
-        case JMP_JNE_K:
-            if (reg_ne(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JNE_X:
-            if (reg_ne(*d, s)) pc += i.off;
-            break;
+		case LDX_MEM_B:
+			d->lower = load_u8(base_address, image_size, s.lower + i.off);
+			d->upper = 0;
+			break;
+		case LDX_MEM_H:
+			d->lower = load_u16(base_address, image_size, s.lower + i.off);
+			d->upper = 0;
+			break;
+		case LDX_MEM_W:
+			d->lower = load_u32(base_address, image_size, s.lower + i.off);
+			d->upper = 0;
+			break;
+		case LDX_MEM_DW:
+			*d = load_ua64(base_address, image_size, s.lower + i.off);
+			break;
 
-        case JMP_JGT_K:
-            if (reg_gt_u(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JGT_X:
-            if (reg_gt_u(*d, s)) pc += i.off;
-            break;
+		case STX_MEM_B:
+			store_u8(base_address, image_size, d->lower + i.off, (u8)s.lower);
+			break;
+		case STX_MEM_H:
+			mem_st_u16(base_address, image_size, d->lower + i.off, (u16)s.lower);
+			break;
+		case STX_MEM_W:
+			store_u32(base_address, image_size, d->lower + i.off, s.lower);
+			break;
+		case STX_MEM_DW:
+			store_ua64(base_address, image_size, d->lower + i.off, s);
+			break;
 
-        case JMP_JGE_K:
-            if (reg_ge_u(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JGE_X:
-            if (reg_ge_u(*d, s)) pc += i.off;
-            break;
+		case ST_MEM_B:
+			store_u8(base_address, image_size, d->lower + i.off, (u8)i.imm);
+			break;
+		case ST_MEM_H:
+			mem_st_u16(base_address, image_size, d->lower + i.off, (u16)i.imm);
+			break;
+		case ST_MEM_W:
+			store_u32(base_address, image_size, d->lower + i.off, (u32)i.imm);
+			break;
+		case ST_MEM_DW:
+			store_ua64(base_address, image_size, d->lower + i.off, kreg);
+			break;
 
-        case JMP_JSET_K:
-            if (!reg_is_zero(reg_and(*d, kreg))) pc += i.off;
-            break;
-        case JMP_JSET_X:
-            if (!reg_is_zero(reg_and(*d, s))) pc += i.off;
-            break;
+		case JMP_JA:
+			pc += i.off;
+			break;
 
-        case JMP_JSGT_K:
-            if (reg_gt_s(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JSGT_X:
-            if (reg_gt_s(*d, s)) pc += i.off;
-            break;
+		case JMP_JEQ_K:
+			if (a64_eq(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JEQ_X:
+			if (a64_eq(*d, s)) pc += i.off;
+			break;
 
-        case JMP_JSGE_K:
-            if (reg_ge_s(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JSGE_X:
-            if (reg_ge_s(*d, s)) pc += i.off;
-            break;
+		case JMP_JNE_K:
+			if (a64_ne(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JNE_X:
+			if (a64_ne(*d, s)) pc += i.off;
+			break;
 
-        case JMP_JSLT_K:
-            if (reg_lt_s(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JSLT_X:
-            if (reg_lt_s(*d, s)) pc += i.off;
-            break;
+		case JMP_JGT_K:
+			if (a64_gt_u(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JGT_X:
+			if (a64_gt_u(*d, s)) pc += i.off;
+			break;
 
-        case JMP_JSLE_K:
-            if (reg_le_s(*d, kreg)) pc += i.off;
-            break;
-        case JMP_JSLE_X:
-            if (reg_le_s(*d, s)) pc += i.off;
-            break;
+		case JMP_JGE_K:
+			if (a64_ge_u(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JGE_X:
+			if (a64_ge_u(*d, s)) pc += i.off;
+			break;
 
-        case JMP_CALL:
-            if (SRC(i) == PSEUDO_CALL) {
-                if (retsp >= MAX_CALL_DEPTH) return 0;
+		case JMP_JSET_K:
+			if (!a64_is_zero(a64_and(*d, kreg))) pc += i.off;
+			break;
+		case JMP_JSET_X:
+			if (!a64_is_zero(a64_and(*d, s))) pc += i.off;
+			break;
 
-                frames[retsp].ret_pc = (u32)pc;
-                for (j = 0; j < FRAME_REGS; j++) {
-                    frames[retsp].saved[j] = r[j];
-                }
-                retsp++;
+		case JMP_JSGT_K:
+			if (a64_gt_s(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JSGT_X:
+			if (a64_gt_s(*d, s)) pc += i.off;
+			break;
 
-                r[10].lo -= BPF_FRAME_SIZE;
-                pc = (s32)((s32)pc + (s32)i.imm);
-                break;
-            }
-            return 0;
+		case JMP_JSGE_K:
+			if (a64_ge_s(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JSGE_X:
+			if (a64_ge_s(*d, s)) pc += i.off;
+			break;
 
-        case JMP_EXIT:
-            if (retsp == 0) {
-                return r[0].lo;
-            }
+		case JMP_JSLT_K:
+			if (a64_lt_s(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JSLT_X:
+			if (a64_lt_s(*d, s)) pc += i.off;
+			break;
 
-            kreg = r[0];
-            retsp--;
-            for (j = 0; j < FRAME_REGS; j++) {
-                r[j] = frames[retsp].saved[j];
-            }
-            r[0] = kreg;
-            pc = (s32)frames[retsp].ret_pc;
-            break;
+		case JMP_JSLE_K:
+			if (a64_le_s(*d, kreg)) pc += i.off;
+			break;
+		case JMP_JSLE_X:
+			if (a64_le_s(*d, s)) pc += i.off;
+			break;
 
-        case LDIMM64:
-        {
-            struct insn i2;
-            decrypt_instr((pc - 1) * INSTR_SIZE, (u8*)(base_address + ((u32)pc * INSTR_SIZE)), &i2);
-            d->lo = (u32)i.imm;
-            d->hi = (u32)i2.imm;
-            pc++;
-            break;
-        }
+		case JMP_CALL:
+			if (SRC(i) != PSEUDO_CALL || retsp >= MAX_CALL_DEPTH)
+				return 0;
 
-        default:
-            return 0;
-        }
-    }
+			frames[retsp].ret_pc = pc;
+
+			for (j = 0; j < FRAME_REGS; j++) {
+				frames[retsp].ctx[j] = r[j];
+			}
+
+			retsp++;
+
+			r[10].lower -= BPF_FRAME_SIZE;
+
+			pc = (s32)(pc + (s32)i.imm);
+			break;
+
+		case JMP_EXIT:
+			if (retsp == 0) {
+				return r[0].lower;
+			}
+
+			kreg = r[0];
+			retsp--;
+			for (j = 0; j < FRAME_REGS; j++) {
+				r[j] = frames[retsp].ctx[j];
+			}
+			r[0] = kreg;
+			pc = (s32)frames[retsp].ret_pc;
+			break;
+
+		case LDIMM64:
+		{
+			struct insn i2;
+			decrypt_instr((pc - 1) * INSTR_SIZE, (u8*)(base_address + ((u32)pc * INSTR_SIZE)), &i2);
+			d->lower = (u32)i.imm;
+			d->upper = (u32)i2.imm;
+			pc++;
+			break;
+		}
+
+		default:
+			return 0;
+		}
+	}
 }
