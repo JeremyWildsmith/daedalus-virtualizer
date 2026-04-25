@@ -1,0 +1,117 @@
+Generating the test project in directory...
+Preparing project ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Applying synthesis template parameters... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Setting up project configuration...
+
+                     Project Configuration                     
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Field            ┃ Selection                                ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Project Name     │ secure-app                               │
+│ Generation Seed  │ 1007                                     │
+│ Architecture     │ Labyrinth                                │
+│ ISA Recoding     │ Yes                                      │
+│ Multiple Kernels │ No                                       │
+├──────────────────┼──────────────────────────────────────────┤
+│ Features         │ - Memory Encryption                      │
+│                  │ - Memory Layout Scrambling               │
+│                  │ - Program Counter Instruction Encryption │
+├──────────────────┼──────────────────────────────────────────┤
+│ Variations       │ - Swap Operands                          │
+│                  │ - Nonlinear Memory Map                   │
+│                  │ - Encrypted Instructions                 │
+│                  │ - Encrypted RAM                          │
+│                  │ - EBPF VM Plain Instructions             │
+└──────────────────┴──────────────────────────────────────────┘
+
+All done! Project is ready.
+Project generated: /tmp/tmp2a_8uq4p/secure-app
+Preparing and running test cases in working directory: /tmp/tmptn_1yuvs
+✔ Compiler build successful
+✔ Platform build successful
+Skipping setup for test per project configuration: test_inline_asm_exec.c
+Skipping setup for test per project configuration: test_inline_asm.c
+✔ Prepared test cases
+✔ Prepared harness / support files
+
+Discovered 51 test cases in "execute and assert" category.
+Starting testing now...
+Test case 'test_control_structures' passed!
+Test case 'test_expressions' passed!
+Test case 'test_continue' passed!
+Test case 'test_array_index_pointer' passed!
+Test case 'test_offsetof_after_bitfield' passed!
+Test case 'test_general_4' passed!
+Test case 'test_for_statement_scope' passed!
+Test case 'test_for_statement' passed!
+Test case 'test_enum_implicit_cast' passed!
+Test case 'test_struct' passed!
+Test case 'test_extern_after_static' passed!
+Test case 'test_literal_data' passed!
+Test case 'test_hello_world' passed!
+Test case 'test_conditionals' passed!
+Test case 'test_struct_copy' passed!
+Test case 'test_general_2' passed!
+Test case 'test_array_of_strings' passed!
+Test case 'test_comma_operator' passed!
+Test case 'test_compound_literal' passed!
+Test case 'test_forward_declaration' passed!
+Test case 'test_anonymous_struct_field_initialization' passed!
+Test case 'test_anonymous_union_member' passed!
+Test case 'test_function_argument_name' passed!
+Test case 'test_enum' passed!
+Test case 'test_fnv' passed!
+Test case 'test_initialization' passed!
+Test case 'test_array' passed!
+Test case 'test_softfloat_bug' passed!
+Test case 'test_case' passed!
+Test case 'test_general_5' passed!
+Test case 'test_tag_scoping' passed!
+Test case 'test_general_1' passed!
+Test case tea_algo_verification was skipped: did not match filter.
+Test case 'test_union' passed!
+Test case 'test_break' passed!
+Test case 'test_pointer_arithmatics' passed!
+Test case 'test_switch_gnu' passed!
+Test case 'test_void_function' passed!
+Test case test_fast_tea was skipped: did not match filter.
+Test case 'test_function_arguments' passed!
+Test case 'test_adjecent_strings' passed!
+Test case 'test_sizeof' passed!
+Test case 'test_offset' passed!
+Test case 'test_type_modifiers' passed!
+Test case test_tea was skipped: did not match filter.
+Test case 'test_assignment_operators' passed!
+Test case 'test_afterwards_declaration' passed!
+Test case 'test_global_compound_literal' passed!
+Test case 'test_ternary_operator' passed!
+Test case 'test_not_all_paths_return_value' passed!
+Test case 'test_goto' passed!
+
+Discovered 15 test cases in "fail compile" category.
+Starting testing now...
+Test case 'test_switch_bad_value_type' passed!
+Test case 'test_duplicate_case_value' passed!
+Test case 'test_offsetof_bitfield' passed!
+Test case 'test_variable_double_definition' passed!
+Test case 'test_function_double_definition' passed!
+Test case 'test_size_outside_struct' passed!
+Test case 'test_loose_case' passed!
+Test case 'test_wrong_tag_kind' passed!
+Test case 'test_incomplete_struct' passed!
+Test case 'test_incomplete_typed_var' passed!
+Test case 'test_non_const_case_value' passed!
+Test case 'test_bad_bitfield_type' passed!
+Test case 'test_loose_default' passed!
+Test case 'test_duplicate_case_range' passed!
+Test case 'test_duplicate_default' passed!
+
+Discovered 1 test cases in "pass compile" category.
+Starting testing now...
+Test case 'test_builtin_va_list' passed!
+
+Discovered 1 test cases in "message passing" category.
+Starting testing now...
+Running test 'test_checksum_messages' ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+Test case 'test_checksum_messages' passed!
+✔ All 65 tests passed. Skipped 3 test cases.
